@@ -69,6 +69,41 @@ type StockfishAnalysis = {
 
 type EvaluationPerspective = 'white' | 'sideToMove' | 'board';
 type EngineMode = 'wasm' | 'asm';
+type MoveQualityLabel = '好棋' | '疑问手' | '失误' | '败着';
+
+type GuessMoveResult = {
+  guessedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+  isCorrect: boolean;
+  matchesStockfish: boolean;
+  summary: string;
+};
+
+type GuessStats = {
+  correct: number;
+  wrong: number;
+};
+
+type GlobalMoveAnalysis = {
+  moveIndex: number;
+  label: string;
+  san: string;
+  quality: MoveQualityLabel;
+  centipawnLoss: number;
+  beforeScore: number | null;
+  afterScore: number | null;
+  isSwingPoint: boolean;
+  bestMoveSan: string;
+};
+
+type EngineAnalysisRequest = {
+  fen: string;
+  resolve: (analysis: StockfishAnalysis) => void;
+  reject: (error: Error) => void;
+  latest: Partial<StockfishAnalysis>;
+  timeoutId: number;
+};
 
 type OpeningEntry = {
   eco: string;
@@ -100,6 +135,9 @@ const notesStorageKey = 'chess-me:position-notes:v1';
 const stockfishWorkerUrl = '/stockfish/stockfish-18-lite-single.js';
 const stockfishWasmUrl = '/stockfish/stockfish-18-lite-single.wasm';
 const stockfishAsmWorkerUrl = '/stockfish/stockfish-18-asm.js';
+const globalAnalysisDepth = 10;
+const swingPointThreshold = 150;
+const guessStatsStorageKey = 'chess-me:guess-stats:v1';
 
 const openingBook: OpeningEntry[] = [
   { eco: 'A00', name: '初始局面', moves: [] },
@@ -571,6 +609,103 @@ function normalizeSan(san: string) {
   return san.replace(/[+#?!]+/g, '');
 }
 
+function analyzeGuessMove({
+  guessedSan,
+  actualSan,
+  stockfishBestSan,
+}: {
+  guessedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+}): GuessMoveResult {
+  const isCorrect = normalizeSan(guessedSan) === normalizeSan(actualSan);
+  const matchesStockfish = Boolean(stockfishBestSan) && normalizeSan(guessedSan) === normalizeSan(stockfishBestSan);
+  const summary = [
+    isCorrect ? '猜对实战手' : '未猜中实战手',
+    `你的选择：${guessedSan}`,
+    `实战手：${actualSan}`,
+    `Stockfish 首选：${stockfishBestSan || '暂未分析'}`,
+    matchesStockfish ? '同时命中引擎首选。' : '可对照实战选择与引擎计划复盘。',
+  ].join(' · ');
+
+  return {
+    guessedSan,
+    actualSan,
+    stockfishBestSan,
+    isCorrect,
+    matchesStockfish,
+    summary,
+  };
+}
+
+function scoreToWhiteCentipawns(score: StockfishAnalysis['score']) {
+  if (!score) {
+    return null;
+  }
+
+  if (score.type === 'mate') {
+    return score.value > 0 ? 10000 : -10000;
+  }
+
+  return score.value;
+}
+
+function classifyMoveFromEvaluationDrop(centipawnLoss: number): MoveQualityLabel {
+  if (centipawnLoss >= 300) {
+    return '败着';
+  }
+
+  if (centipawnLoss >= 150) {
+    return '失误';
+  }
+
+  if (centipawnLoss >= 60) {
+    return '疑问手';
+  }
+
+  return '好棋';
+}
+
+function detectSwingPoint(beforeScore: number | null, afterScore: number | null, centipawnLoss: number) {
+  if (beforeScore === null || afterScore === null) {
+    return false;
+  }
+
+  const crossedBalance = Math.sign(beforeScore) !== Math.sign(afterScore) && Math.abs(beforeScore - afterScore) >= 120;
+  return centipawnLoss >= swingPointThreshold || crossedBalance;
+}
+
+function getMoverCentipawnLoss(move: Move, beforeScore: number | null, afterScore: number | null) {
+  if (beforeScore === null || afterScore === null) {
+    return 0;
+  }
+
+  const deltaForWhite = afterScore - beforeScore;
+  const moverDelta = move.color === 'w' ? deltaForWhite : -deltaForWhite;
+  return Math.max(0, -moverDelta);
+}
+
+function loadStoredGuessStats(): GuessStats {
+  try {
+    const rawStats = window.localStorage.getItem(guessStatsStorageKey);
+    if (!rawStats) {
+      return { correct: 0, wrong: 0 };
+    }
+
+    const parsed = JSON.parse(rawStats) as Partial<GuessStats>;
+    return {
+      correct: Number(parsed.correct) || 0,
+      wrong: Number(parsed.wrong) || 0,
+    };
+  } catch {
+    return { correct: 0, wrong: 0 };
+  }
+}
+
+function saveStoredGuessStats(stats: GuessStats) {
+  window.localStorage.setItem(guessStatsStorageKey, JSON.stringify(stats));
+}
+
 function getTrainingExplanation({
   analysis,
   nextMove,
@@ -834,11 +969,20 @@ function App() {
   const [engineMode, setEngineMode] = useState<EngineMode>('wasm');
   const [engineLog, setEngineLog] = useState<string[]>([]);
   const [savedVariations, setSavedVariations] = useState<SavedVariation[]>([]);
+  const [isGuessMode, setIsGuessMode] = useState(false);
+  const [guessResult, setGuessResult] = useState<GuessMoveResult | null>(null);
+  const [guessStats, setGuessStats] = useState<GuessStats>(() =>
+    typeof window === 'undefined' ? { correct: 0, wrong: 0 } : loadStoredGuessStats(),
+  );
+  const [globalAnalysis, setGlobalAnalysis] = useState<GlobalMoveAnalysis[]>([]);
+  const [isGlobalAnalyzing, setIsGlobalAnalyzing] = useState(false);
+  const [globalAnalysisProgress, setGlobalAnalysisProgress] = useState('');
   const engineRef = useRef<Worker | null>(null);
   const engineReadyRef = useRef(false);
   const engineReadyTimerRef = useRef<number | null>(null);
   const engineModeRef = useRef<EngineMode>('wasm');
   const analysisFenRef = useRef('');
+  const engineRequestRef = useRef<EngineAnalysisRequest | null>(null);
 
   const result = useMemo(
     () => (mode === 'pgn' ? parsePgn(text) : parseFen(text)),
@@ -867,6 +1011,7 @@ function App() {
   }, [result.moves, safeIndex, variationIndex, variationPositions]);
   const openingMatch = useMemo(() => identifyOpening(playedMoves), [playedMoves]);
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
+  const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -900,6 +1045,10 @@ function App() {
   useEffect(() => {
     saveStoredNotes(notesByPosition);
   }, [notesByPosition]);
+
+  useEffect(() => {
+    saveStoredGuessStats(guessStats);
+  }, [guessStats]);
 
   useEffect(() => {
     return () => {
@@ -971,8 +1120,16 @@ function App() {
       }
 
       const currentFen = analysisFenRef.current;
+      const pendingRequest = engineRequestRef.current;
       const partialAnalysis = parseStockfishInfo(line, currentFen);
       if (partialAnalysis) {
+        if (pendingRequest) {
+          pendingRequest.latest = {
+            ...pendingRequest.latest,
+            ...partialAnalysis,
+          };
+        }
+
         setAnalysis((currentAnalysis) => ({
           depth: partialAnalysis.depth ?? currentAnalysis?.depth ?? 0,
           score: partialAnalysis.score ?? currentAnalysis?.score ?? null,
@@ -984,14 +1141,23 @@ function App() {
 
       if (line.startsWith('bestmove ')) {
         const bestMove = line.split(/\s+/)[1] ?? '';
+        const bestMoveSan = formatBestMove(currentFen, bestMove);
         addEngineLog(`bestmove ${bestMove}`);
-        setAnalysis((currentAnalysis) => ({
-          depth: currentAnalysis?.depth ?? 0,
-          score: currentAnalysis?.score ?? null,
-          pv: currentAnalysis?.pv ?? [],
+        const completedAnalysis: StockfishAnalysis = {
+          depth: pendingRequest?.latest.depth ?? 0,
+          score: pendingRequest?.latest.score ?? null,
+          pv: pendingRequest?.latest.pv ?? [],
           bestMove,
-          bestMoveSan: formatBestMove(currentFen, bestMove),
-        }));
+          bestMoveSan,
+        };
+
+        if (pendingRequest) {
+          window.clearTimeout(pendingRequest.timeoutId);
+          engineRequestRef.current = null;
+          pendingRequest.resolve(completedAnalysis);
+        }
+
+        setAnalysis(completedAnalysis);
         setEngineStatus('ready');
       }
     };
@@ -1047,7 +1213,7 @@ function App() {
     return worker;
   };
 
-  const startAnalysisForFen = (fen: string) => {
+  const startAnalysisForFen = (fen: string, depth = 14) => {
     try {
       const engine = getEngine();
       analysisFenRef.current = fen;
@@ -1062,12 +1228,42 @@ function App() {
       engine.postMessage('stop');
       engine.postMessage('ucinewgame');
       engine.postMessage(`position fen ${fen}`);
-      engine.postMessage('go depth 14');
+      engine.postMessage(`go depth ${depth}`);
     } catch {
       setEngineStatus('error');
       showToast({ type: 'error', text: 'Stockfish 无法启动。' });
     }
   };
+
+  const analyzeFenOnce = (fen: string, depth = globalAnalysisDepth) =>
+    new Promise<StockfishAnalysis>((resolve, reject) => {
+      const engine = getEngine();
+      if (engineRequestRef.current) {
+        window.clearTimeout(engineRequestRef.current.timeoutId);
+        engineRequestRef.current.reject(new Error('新的分析请求已取代旧请求。'));
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (engineRequestRef.current?.fen === fen) {
+          engineRequestRef.current = null;
+          reject(new Error('Stockfish 分析超时。'));
+        }
+      }, 15000);
+
+      engineRequestRef.current = {
+        fen,
+        resolve,
+        reject,
+        latest: {},
+        timeoutId,
+      };
+      analysisFenRef.current = fen;
+      setEngineStatus('analyzing');
+      engine.postMessage('stop');
+      engine.postMessage('ucinewgame');
+      engine.postMessage(`position fen ${fen}`);
+      engine.postMessage(`go depth ${depth}`);
+    });
 
   useEffect(() => {
     engineRef.current?.postMessage('stop');
@@ -1089,8 +1285,117 @@ function App() {
 
   const stopAnalysis = () => {
     setIsAnalysisEnabled(false);
+    if (engineRequestRef.current) {
+      window.clearTimeout(engineRequestRef.current.timeoutId);
+      engineRequestRef.current.reject(new Error('分析已关闭。'));
+      engineRequestRef.current = null;
+    }
     engineRef.current?.postMessage('stop');
     setEngineStatus(engineRef.current ? 'ready' : 'idle');
+  };
+
+  const toggleGuessMode = () => {
+    setIsGuessMode((enabled) => !enabled);
+    setGuessResult(null);
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+  };
+
+  const handleGuessSubmitted = (move: Move) => {
+    if (!isGuessMode || guessResult || !nextOriginalMove) {
+      return;
+    }
+
+    const result = analyzeGuessMove({
+      guessedSan: move.san,
+      actualSan: nextOriginalMove.san,
+      stockfishBestSan: analysis?.bestMoveSan ?? '',
+    });
+    setGuessResult(result);
+    setGuessStats((stats) => ({
+      correct: stats.correct + (result.isCorrect ? 1 : 0),
+      wrong: stats.wrong + (result.isCorrect ? 0 : 1),
+    }));
+    showToast({ type: result.isCorrect ? 'success' : 'error', text: result.summary });
+  };
+
+  const nextGuessPosition = () => {
+    if (safeIndex >= maxIndex) {
+      return;
+    }
+
+    updatePositionIndex((index) => Math.min(index + 1, maxIndex));
+    setGuessResult(null);
+  };
+
+  const resetGuessStats = () => {
+    setGuessStats({ correct: 0, wrong: 0 });
+  };
+
+  const runGlobalAnalysis = async () => {
+    if (mode !== 'pgn' || result.moves.length === 0 || result.error) {
+      showToast({ type: 'error', text: '请先导入包含走法的 PGN 棋谱。' });
+      return;
+    }
+
+    setIsGlobalAnalyzing(true);
+    setGlobalAnalysis([]);
+    setGlobalAnalysisProgress('准备分析整盘棋…');
+    setIsAnalysisEnabled(false);
+
+    try {
+      const positionScores = new Map<number, number | null>();
+      const bestMovesByIndex = new Map<number, string>();
+
+      for (let index = 0; index < result.moves.length; index += 1) {
+        const beforeFen = result.positions[index]?.fen;
+        if (!beforeFen) {
+          continue;
+        }
+
+        setGlobalAnalysisProgress(`分析第 ${index + 1}/${result.moves.length} 手之前局面…`);
+        const beforeAnalysis = await analyzeFenOnce(beforeFen);
+        positionScores.set(index, scoreToWhiteCentipawns(beforeAnalysis.score));
+        bestMovesByIndex.set(index, beforeAnalysis.bestMoveSan || beforeAnalysis.bestMove);
+      }
+
+      const finalFen = result.positions[result.moves.length]?.fen;
+      if (finalFen) {
+        setGlobalAnalysisProgress('分析终局局面…');
+        const finalAnalysis = await analyzeFenOnce(finalFen);
+        positionScores.set(result.moves.length, scoreToWhiteCentipawns(finalAnalysis.score));
+      }
+
+      const report = result.moves.map((move, index) => {
+        const beforeScore = positionScores.get(index) ?? null;
+        const afterScore = positionScores.get(index + 1) ?? null;
+        const centipawnLoss = Math.round(getMoverCentipawnLoss(move, beforeScore, afterScore));
+        return {
+          moveIndex: index,
+          label: formatMoveLabel(move, index),
+          san: move.san,
+          quality: classifyMoveFromEvaluationDrop(centipawnLoss),
+          centipawnLoss,
+          beforeScore,
+          afterScore,
+          isSwingPoint: detectSwingPoint(beforeScore, afterScore, centipawnLoss),
+          bestMoveSan: bestMovesByIndex.get(index) ?? '',
+        };
+      });
+
+      setGlobalAnalysis(report);
+      setGlobalAnalysisProgress(`完成：已分析 ${report.length} 手。`);
+      setEngineStatus('ready');
+      showToast({ type: 'success', text: '整盘棋分析完成。' });
+    } catch (error) {
+      setGlobalAnalysisProgress(error instanceof Error ? error.message : '整盘棋分析失败。');
+      setEngineStatus('error');
+      showToast({ type: 'error', text: '整盘棋分析失败，请稍后重试。' });
+    } finally {
+      setIsGlobalAnalyzing(false);
+    }
   };
 
   const updatePositionIndex = (nextIndex: number | ((index: number) => number)) => {
@@ -1099,6 +1404,7 @@ function App() {
     setVariationIndex(-1);
     setSelectedSquare(null);
     setPendingPromotion(null);
+    setGuessResult(null);
   };
 
   const updateMode = (nextMode: ReplayMode) => {
@@ -1109,6 +1415,9 @@ function App() {
     setVariationIndex(-1);
     setSelectedSquare(null);
     setPendingPromotion(null);
+    setGuessResult(null);
+    setGlobalAnalysis([]);
+    setGlobalAnalysisProgress('');
   };
 
   const updateText = (value: string) => {
@@ -1118,6 +1427,9 @@ function App() {
     setVariationIndex(-1);
     setSelectedSquare(null);
     setPendingPromotion(null);
+    setGuessResult(null);
+    setGlobalAnalysis([]);
+    setGlobalAnalysisProgress('');
   };
 
   const updateCurrentNote = (value: string) => {
@@ -1268,6 +1580,7 @@ function App() {
       setVariationIndex(nextPositions.length - 1);
       return nextPositions;
     });
+    handleGuessSubmitted(move);
     setSelectedSquare(null);
     setPendingPromotion(null);
     return true;
@@ -1395,6 +1708,18 @@ function App() {
             </button>
           </div>
 
+          <GuessTrainingPanel
+            isEnabled={isGuessMode}
+            nextMove={nextOriginalMove}
+            shouldHideNextMove={shouldHideNextMove}
+            result={guessResult}
+            stats={guessStats}
+            onToggle={toggleGuessMode}
+            onAnalyze={analyzeCurrentPosition}
+            onNext={nextGuessPosition}
+            onResetStats={resetGuessStats}
+          />
+
           <div className="variation-panel">
             <div>
               <span className="variation-label">{isVariationMode ? '变化图' : '原棋谱'}</span>
@@ -1439,6 +1764,15 @@ function App() {
           />
 
           <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} />
+
+          <GlobalAnalysisPanel
+            analyses={globalAnalysis}
+            isAnalyzing={isGlobalAnalyzing}
+            progress={globalAnalysisProgress}
+            canAnalyze={mode === 'pgn' && result.moves.length > 0 && !result.error}
+            onAnalyze={runGlobalAnalysis}
+            onSelectMove={(index) => updatePositionIndex(index + 1)}
+          />
 
           {current && (
             <TrainingNotes
@@ -1504,6 +1838,7 @@ function App() {
               activeVariationIndex={variationIndex}
               notesByPosition={notesByPosition}
               noteContext={{ mode, text }}
+              hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
               onSelect={updatePositionIndex}
               onVariationSelect={(index) => {
                 setVariationIndex(index);
@@ -1836,6 +2171,147 @@ function StockfishPanel({
   );
 }
 
+function GuessTrainingPanel({
+  isEnabled,
+  nextMove,
+  shouldHideNextMove,
+  result,
+  stats,
+  onToggle,
+  onAnalyze,
+  onNext,
+  onResetStats,
+}: {
+  isEnabled: boolean;
+  nextMove?: Move;
+  shouldHideNextMove: boolean;
+  result: GuessMoveResult | null;
+  stats: GuessStats;
+  onToggle: () => void;
+  onAnalyze: () => void;
+  onNext: () => void;
+  onResetStats: () => void;
+}) {
+  const total = stats.correct + stats.wrong;
+  const accuracy = total ? Math.round((stats.correct / total) * 100) : 0;
+
+  return (
+    <section className="guess-panel" aria-label="猜下一手训练">
+      <div className="guess-header">
+        <div>
+          <span>猜下一手训练</span>
+          <p>
+            {isEnabled
+              ? shouldHideNextMove
+                ? '已隐藏棋谱下一手，请直接在棋盘上先走。'
+                : '本局面暂无可隐藏的下一手。'
+              : '开启后会隐藏棋谱下一手，先由你在棋盘上猜。'}
+          </p>
+        </div>
+        <button type="button" onClick={onToggle}>
+          {isEnabled ? '退出训练' : '开始训练'}
+        </button>
+      </div>
+
+      <div className="guess-stats">
+        <div>
+          <span>猜对</span>
+          <strong>{stats.correct}</strong>
+        </div>
+        <div>
+          <span>猜错</span>
+          <strong>{stats.wrong}</strong>
+        </div>
+        <div>
+          <span>正确率</span>
+          <strong>{accuracy}%</strong>
+        </div>
+      </div>
+
+      {result ? (
+        <div className={`guess-result ${result.isCorrect ? 'correct' : 'wrong'}`}>
+          <strong>{result.isCorrect ? '猜对了' : '未猜中'}</strong>
+          <p>{result.summary}</p>
+        </div>
+      ) : (
+        <p className="guess-hint">
+          {isEnabled && nextMove ? '下一手已遮挡；走完后会自动对比实战手和 Stockfish 首选。' : '可随时开启训练模式。'}
+        </p>
+      )}
+
+      <div className="guess-actions">
+        <button type="button" onClick={onAnalyze} disabled={!isEnabled || !nextMove}>
+          分析当前猜题
+        </button>
+        <button type="button" onClick={onNext} disabled={!result || !nextMove}>
+          下一题
+        </button>
+        <button type="button" onClick={onResetStats} disabled={total === 0}>
+          清零记录
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function GlobalAnalysisPanel({
+  analyses,
+  isAnalyzing,
+  progress,
+  canAnalyze,
+  onAnalyze,
+  onSelectMove,
+}: {
+  analyses: GlobalMoveAnalysis[];
+  isAnalyzing: boolean;
+  progress: string;
+  canAnalyze: boolean;
+  onAnalyze: () => void;
+  onSelectMove: (moveIndex: number) => void;
+}) {
+  const swingPoints = analyses.filter((item) => item.isSwingPoint);
+
+  return (
+    <section className="global-analysis-panel" aria-label="一键全局分析">
+      <div className="global-analysis-header">
+        <div>
+          <span>一键全局分析</span>
+          <p>{progress || '自动分析整盘棋，为每一步打标签并标出局势突变点。'}</p>
+        </div>
+        <button type="button" onClick={onAnalyze} disabled={!canAnalyze || isAnalyzing}>
+          {isAnalyzing ? '分析中…' : '分析整盘'}
+        </button>
+      </div>
+
+      {swingPoints.length > 0 && (
+        <div className="swing-summary">
+          <span>局势突变点</span>
+          <p>{swingPoints.map((item) => item.label).join('、')}</p>
+        </div>
+      )}
+
+      {analyses.length > 0 && (
+        <div className="global-analysis-list">
+          {analyses.map((item) => (
+            <button
+              type="button"
+              key={`${item.moveIndex}-${item.san}`}
+              className={`analysis-row quality-${item.quality} ${item.isSwingPoint ? 'swing' : ''}`}
+              onClick={() => onSelectMove(item.moveIndex)}
+            >
+              <span className="analysis-label">{item.label}</span>
+              <span className="analysis-quality">{item.quality}</span>
+              <span className="analysis-loss">损失 {item.centipawnLoss} cp</span>
+              <span className="analysis-best">首选 {item.bestMoveSan || '-'}</span>
+              {item.isSwingPoint && <strong>突变</strong>}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SavedVariationsPanel({
   variations,
   onDelete,
@@ -1940,6 +2416,7 @@ function MoveList({
   activeVariationIndex,
   notesByPosition,
   noteContext,
+  hiddenMoveIndex,
   onSelect,
   onVariationSelect,
 }: {
@@ -1954,6 +2431,7 @@ function MoveList({
     mode: ReplayMode;
     text: string;
   };
+  hiddenMoveIndex: number | null;
   onSelect: (index: number) => void;
   onVariationSelect: (index: number) => void;
 }) {
@@ -2008,7 +2486,9 @@ function MoveList({
         />
       </button>
       <div className="moves-grid">
-        {moves.map((move, index) => (
+        {moves.map((move, index) => {
+          const isHidden = hiddenMoveIndex === index;
+          return (
           <button
             type="button"
             key={`${move.lan}-${index}`}
@@ -2016,7 +2496,7 @@ function MoveList({
             onClick={() => onSelect(index + 1)}
           >
             <MoveButtonContent
-              label={formatMoveLabel(move, index)}
+              label={isHidden ? `${formatMoveLabel(move, index).split(' ')[0]} ??` : formatMoveLabel(move, index)}
               hasComment={Boolean(positions[index + 1]?.comment)}
               hasNote={Boolean(
                 positions[index + 1] &&
@@ -2031,7 +2511,8 @@ function MoveList({
               )}
             />
           </button>
-        ))}
+          );
+        })}
       </div>
       <VariationMoveList
         positions={variationPositions}
@@ -2096,4 +2577,11 @@ function VariationMoveList({
   );
 }
 
-export { App };
+export {
+  App,
+  analyzeGuessMove,
+  classifyMoveFromEvaluationDrop,
+  detectSwingPoint,
+  normalizeSan,
+  scoreToWhiteCentipawns,
+};
