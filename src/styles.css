@@ -379,6 +379,7 @@ h2 {
 }
 
 .guess-panel,
+.mistake-book-panel,
 .global-analysis-panel,
 .saved-variations {
   display: grid;
@@ -392,6 +393,7 @@ h2 {
 }
 
 .guess-header,
+.mistake-book-header,
 .global-analysis-header,
 .saved-variations-header {
   display: flex;
@@ -401,6 +403,7 @@ h2 {
 }
 
 .guess-header span,
+.mistake-book-header span,
 .global-analysis-header span,
 .saved-variations-header span {
   color: var(--accent-strong);
@@ -418,6 +421,7 @@ h2 {
 }
 
 .guess-stats,
+.mistake-card-list,
 .global-analysis-list,
 .saved-variation-list {
   display: grid;
@@ -453,6 +457,10 @@ h2 {
 }
 
 .guess-header p,
+.mistake-book-header p,
+.mistake-empty,
+.mistake-card p,
+.mistake-card small,
 .global-analysis-header p,
 .guess-hint,
 .guess-result p,
@@ -470,6 +478,8 @@ h2 {
 
 .guess-header button,
 .guess-actions button,
+.mistake-book-header button,
+.mistake-card-actions button,
 .global-analysis-header button {
   min-height: 40px;
   border-radius: 8px;
@@ -485,6 +495,27 @@ h2 {
 .guess-result.wrong {
   border-color: rgba(169, 68, 66, 0.34);
   background: #fff1ef;
+}
+
+.mistake-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.mistake-card strong {
+  color: var(--ink);
+}
+
+.mistake-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .analysis-row {

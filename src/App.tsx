@@ -85,6 +85,21 @@ type GuessStats = {
   wrong: number;
 };
 
+type MistakeCard = {
+  id: string;
+  fen: string;
+  positionLabel: string;
+  guessedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+  pgnText: string;
+  attempts: number;
+  solvedCount: number;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 type GlobalMoveAnalysis = {
   moveIndex: number;
   label: string;
@@ -138,6 +153,7 @@ const stockfishAsmWorkerUrl = '/stockfish/stockfish-18-asm.js';
 const globalAnalysisDepth = 10;
 const swingPointThreshold = 150;
 const guessStatsStorageKey = 'chess-me:guess-stats:v1';
+const mistakeBookStorageKey = 'chess-me:mistake-book:v1';
 
 const openingBook: OpeningEntry[] = [
   { eco: 'A00', name: '初始局面', moves: [] },
@@ -638,6 +654,58 @@ function analyzeGuessMove({
   };
 }
 
+function buildMistakeCardFromGuess({
+  baseFen,
+  positionLabel,
+  result,
+  pgnText,
+}: {
+  baseFen: string;
+  positionLabel: string;
+  result: GuessMoveResult;
+  pgnText: string;
+}): MistakeCard | null {
+  if (result.isCorrect) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  return {
+    id: `${baseFen}:${normalizeSan(result.actualSan)}`,
+    fen: baseFen,
+    positionLabel,
+    guessedSan: result.guessedSan,
+    actualSan: result.actualSan,
+    stockfishBestSan: result.stockfishBestSan,
+    pgnText,
+    attempts: 1,
+    solvedCount: 0,
+    tags: ['猜下一手'],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function upsertMistakeCard(cards: MistakeCard[], card: MistakeCard): MistakeCard[] {
+  const index = cards.findIndex((item) => item.id === card.id);
+  if (index < 0) {
+    return [card, ...cards];
+  }
+
+  return cards.map((item, itemIndex) =>
+    itemIndex === index
+      ? {
+          ...item,
+          ...card,
+          attempts: item.attempts + 1,
+          solvedCount: item.solvedCount,
+          createdAt: item.createdAt,
+          updatedAt: card.updatedAt,
+        }
+      : item,
+  );
+}
+
 function scoreToWhiteCentipawns(score: StockfishAnalysis['score']) {
   if (!score) {
     return null;
@@ -704,6 +772,24 @@ function loadStoredGuessStats(): GuessStats {
 
 function saveStoredGuessStats(stats: GuessStats) {
   window.localStorage.setItem(guessStatsStorageKey, JSON.stringify(stats));
+}
+
+function loadStoredMistakeCards(): MistakeCard[] {
+  try {
+    const rawCards = window.localStorage.getItem(mistakeBookStorageKey);
+    if (!rawCards) {
+      return [];
+    }
+
+    const parsed = JSON.parse(rawCards) as MistakeCard[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredMistakeCards(cards: MistakeCard[]) {
+  window.localStorage.setItem(mistakeBookStorageKey, JSON.stringify(cards));
 }
 
 function getTrainingExplanation({
@@ -974,6 +1060,9 @@ function App() {
   const [guessStats, setGuessStats] = useState<GuessStats>(() =>
     typeof window === 'undefined' ? { correct: 0, wrong: 0 } : loadStoredGuessStats(),
   );
+  const [mistakeCards, setMistakeCards] = useState<MistakeCard[]>(() =>
+    typeof window === 'undefined' ? [] : loadStoredMistakeCards(),
+  );
   const [globalAnalysis, setGlobalAnalysis] = useState<GlobalMoveAnalysis[]>([]);
   const [isGlobalAnalyzing, setIsGlobalAnalyzing] = useState(false);
   const [globalAnalysisProgress, setGlobalAnalysisProgress] = useState('');
@@ -1049,6 +1138,10 @@ function App() {
   useEffect(() => {
     saveStoredGuessStats(guessStats);
   }, [guessStats]);
+
+  useEffect(() => {
+    saveStoredMistakeCards(mistakeCards);
+  }, [mistakeCards]);
 
   useEffect(() => {
     return () => {
@@ -1318,6 +1411,17 @@ function App() {
       correct: stats.correct + (result.isCorrect ? 1 : 0),
       wrong: stats.wrong + (result.isCorrect ? 0 : 1),
     }));
+
+    const mistakeCard = buildMistakeCardFromGuess({
+      baseFen: originalFen,
+      positionLabel: nextOriginalMove ? formatMoveLabel(nextOriginalMove, safeIndex) : current?.label ?? '当前局面',
+      result,
+      pgnText: mode === 'pgn' ? text : '',
+    });
+    if (mistakeCard) {
+      setMistakeCards((cards) => upsertMistakeCard(cards, mistakeCard));
+    }
+
     showToast({ type: result.isCorrect ? 'success' : 'error', text: result.summary });
   };
 
@@ -1332,6 +1436,51 @@ function App() {
 
   const resetGuessStats = () => {
     setGuessStats({ correct: 0, wrong: 0 });
+  };
+
+  const addCurrentPositionToMistakeBook = () => {
+    const actualSan = nextOriginalMove?.san ?? '待复盘';
+    const now = new Date().toISOString();
+    const card: MistakeCard = {
+      id: `${originalFen}:${normalizeSan(actualSan)}`,
+      fen: originalFen,
+      positionLabel: nextOriginalMove ? formatMoveLabel(nextOriginalMove, safeIndex) : current?.label ?? '当前局面',
+      guessedSan: '手动加入',
+      actualSan,
+      stockfishBestSan: analysis?.bestMoveSan ?? '',
+      pgnText: mode === 'pgn' ? text : '',
+      attempts: 1,
+      solvedCount: 0,
+      tags: ['手动加入'],
+      createdAt: now,
+      updatedAt: now,
+    };
+    setMistakeCards((cards) => upsertMistakeCard(cards, card));
+    showToast({ type: 'success', text: '已加入错题本。' });
+  };
+
+  const practiceMistakeCard = (card: MistakeCard) => {
+    setMode('fen');
+    setText(card.fen);
+    setPositionIndex(0);
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+    setGuessResult(null);
+    setIsGuessMode(false);
+    setMistakeCards((cards) =>
+      cards.map((item) =>
+        item.id === card.id
+          ? { ...item, solvedCount: item.solvedCount + 1, updatedAt: new Date().toISOString() }
+          : item,
+      ),
+    );
+    showToast({ type: 'success', text: '已载入错题局面，可在棋盘上重新训练。' });
+  };
+
+  const deleteMistakeCard = (id: string) => {
+    setMistakeCards((cards) => cards.filter((card) => card.id !== id));
   };
 
   const runGlobalAnalysis = async () => {
@@ -1718,6 +1867,13 @@ function App() {
             onAnalyze={analyzeCurrentPosition}
             onNext={nextGuessPosition}
             onResetStats={resetGuessStats}
+          />
+
+          <MistakeBookPanel
+            cards={mistakeCards}
+            onAddCurrent={addCurrentPositionToMistakeBook}
+            onPractice={practiceMistakeCard}
+            onDelete={deleteMistakeCard}
           />
 
           <div className="variation-panel">
@@ -2254,6 +2410,60 @@ function GuessTrainingPanel({
   );
 }
 
+function MistakeBookPanel({
+  cards,
+  onAddCurrent,
+  onPractice,
+  onDelete,
+}: {
+  cards: MistakeCard[];
+  onAddCurrent: () => void;
+  onPractice: (card: MistakeCard) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <section className="mistake-book-panel" aria-label="错题本">
+      <div className="mistake-book-header">
+        <div>
+          <span>错题本</span>
+          <p>猜错会自动保存，也可以手动加入当前局面。</p>
+        </div>
+        <button type="button" onClick={onAddCurrent}>
+          加入当前局面
+        </button>
+      </div>
+
+      {cards.length === 0 ? (
+        <p className="mistake-empty">暂无错题。开启猜下一手训练后，猜错的局面会自动进入这里。</p>
+      ) : (
+        <div className="mistake-card-list">
+          {cards.map((card) => (
+            <article className="mistake-card" key={card.id}>
+              <div>
+                <strong>{card.positionLabel}</strong>
+                <p>
+                  你的选择：{card.guessedSan} · 正解：{card.actualSan} · 引擎：{card.stockfishBestSan || '-'}
+                </p>
+                <small>
+                  错误 {card.attempts} 次 · 重练 {card.solvedCount} 次 · {card.tags.join('、')}
+                </small>
+              </div>
+              <div className="mistake-card-actions">
+                <button type="button" onClick={() => onPractice(card)}>
+                  重新训练
+                </button>
+                <button type="button" onClick={() => onDelete(card.id)}>
+                  删除
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function GlobalAnalysisPanel({
   analyses,
   isAnalyzing,
@@ -2580,8 +2790,10 @@ function VariationMoveList({
 export {
   App,
   analyzeGuessMove,
+  buildMistakeCardFromGuess,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   normalizeSan,
   scoreToWhiteCentipawns,
+  upsertMistakeCard,
 };

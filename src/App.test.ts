@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   analyzeGuessMove,
+  buildMistakeCardFromGuess,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   normalizeSan,
   scoreToWhiteCentipawns,
+  upsertMistakeCard,
 } from './App';
 
 describe('guess next move training helpers', () => {
@@ -46,5 +48,55 @@ describe('global game analysis helpers', () => {
     expect(scoreToWhiteCentipawns({ type: 'mate', value: 2 })).toBe(10000);
     expect(scoreToWhiteCentipawns({ type: 'mate', value: -3 })).toBe(-10000);
     expect(scoreToWhiteCentipawns({ type: 'cp', value: -75 })).toBe(-75);
+  });
+});
+
+describe('mistake book helpers', () => {
+  it('builds a mistake card from a wrong guess result', () => {
+    const card = buildMistakeCardFromGuess({
+      baseFen: 'start-fen',
+      positionLabel: '3. Bb5',
+      result: analyzeGuessMove({ guessedSan: 'Bc4', actualSan: 'Bb5', stockfishBestSan: 'Bb5' }),
+      pgnText: '1. e4 e5 2. Nf3 Nc6 3. Bb5',
+    });
+
+    expect(card).toMatchObject({
+      fen: 'start-fen',
+      positionLabel: '3. Bb5',
+      guessedSan: 'Bc4',
+      actualSan: 'Bb5',
+      stockfishBestSan: 'Bb5',
+      attempts: 1,
+      solvedCount: 0,
+      tags: ['猜下一手'],
+    });
+    expect(card?.id).toContain('start-fen');
+  });
+
+  it('does not create a mistake card for a correct guess', () => {
+    const card = buildMistakeCardFromGuess({
+      baseFen: 'start-fen',
+      positionLabel: '1. e4',
+      result: analyzeGuessMove({ guessedSan: 'e4', actualSan: 'e4', stockfishBestSan: 'e4' }),
+      pgnText: '1. e4',
+    });
+
+    expect(card).toBeNull();
+  });
+
+  it('upserts mistake cards by id and increments attempts on repeated mistakes', () => {
+    const card = buildMistakeCardFromGuess({
+      baseFen: 'same-fen',
+      positionLabel: '4... Nf6',
+      result: analyzeGuessMove({ guessedSan: 'd6', actualSan: 'Nf6', stockfishBestSan: 'Nf6' }),
+      pgnText: 'sample pgn',
+    });
+
+    expect(card).not.toBeNull();
+    const inserted = upsertMistakeCard([], card!);
+    const updated = upsertMistakeCard(inserted, { ...card!, guessedSan: 'Be7' });
+
+    expect(updated).toHaveLength(1);
+    expect(updated[0]).toMatchObject({ attempts: 2, guessedSan: 'Be7' });
   });
 });
