@@ -1,0 +1,2099 @@
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { Chess, type Color, type Move, type PieceSymbol, type Square } from 'chess.js';
+
+type ReplayMode = 'pgn' | 'fen';
+
+type ReplayPosition = {
+  fen: string;
+  label: string;
+  move?: Move;
+  comment?: string;
+};
+
+type VariationPosition = {
+  fen: string;
+  label: string;
+  move: Move;
+};
+
+type SavedVariation = {
+  id: string;
+  baseIndex: number;
+  baseFen: string;
+  moves: string[];
+  labels: string[];
+};
+
+type ParseResult = {
+  positions: ReplayPosition[];
+  moves: Move[];
+  error?: string;
+  source: ReplayMode;
+};
+
+type PgnComment = {
+  fen: string;
+  comment: string;
+};
+
+type PendingPromotion = {
+  from: Square;
+  to: Square;
+};
+
+type MoveInput = {
+  from: Square;
+  to: Square;
+  promotion?: Exclude<PieceSymbol, 'p' | 'k'>;
+};
+
+type CapturedPieces = Record<Color, PieceSymbol[]>;
+
+type ToastMessage = {
+  type: 'success' | 'error';
+  text: string;
+};
+
+type EngineStatus = 'idle' | 'loading' | 'ready' | 'analyzing' | 'error';
+
+type StockfishAnalysis = {
+  depth: number;
+  score: {
+    type: 'cp' | 'mate';
+    value: number;
+  } | null;
+  bestMove: string;
+  bestMoveSan: string;
+  pv: string[];
+};
+
+type EvaluationPerspective = 'white' | 'sideToMove' | 'board';
+type EngineMode = 'wasm' | 'asm';
+
+type OpeningEntry = {
+  eco: string;
+  name: string;
+  moves: string[];
+};
+
+type OpeningMatch = {
+  eco: string;
+  name: string;
+  status: 'start' | 'book' | 'recognized' | 'deviation' | 'unknown';
+  matchedPly: number;
+  nextBookMove?: string;
+  deviationMove?: string;
+};
+
+const initialPgn = `[Event "Training Review"]
+[Site "Chess Me"]
+[Date "2026.05.14"]
+[Round "-"]
+[White "You"]
+[Black "Opponent"]
+[Result "*"]
+
+1. e4 {抢占中心。} e5 2. Nf3 Nc6 3. Bb5 {西班牙开局。} a6 *`;
+
+const initialFen = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+const notesStorageKey = 'chess-me:position-notes:v1';
+const stockfishWorkerUrl = '/stockfish/stockfish-18-lite-single.js';
+const stockfishWasmUrl = '/stockfish/stockfish-18-lite-single.wasm';
+const stockfishAsmWorkerUrl = '/stockfish/stockfish-18-asm.js';
+
+const openingBook: OpeningEntry[] = [
+  { eco: 'A00', name: '初始局面', moves: [] },
+  { eco: 'A10', name: 'English Opening', moves: ['c4'] },
+  { eco: 'A40', name: "Queen's Pawn Game", moves: ['d4'] },
+  { eco: 'A45', name: 'Trompowsky Attack', moves: ['d4', 'Nf6', 'Bg5'] },
+  { eco: 'A46', name: 'London System', moves: ['d4', 'Nf6', 'Bf4'] },
+  { eco: 'A50', name: "Queen's Pawn: Indian Game", moves: ['d4', 'Nf6'] },
+  { eco: 'A57', name: 'Benko Gambit', moves: ['d4', 'Nf6', 'c4', 'c5', 'd5', 'b5'] },
+  { eco: 'A80', name: 'Dutch Defense', moves: ['d4', 'f5'] },
+  { eco: 'B00', name: "King's Pawn Game", moves: ['e4'] },
+  { eco: 'B01', name: 'Scandinavian Defense', moves: ['e4', 'd5'] },
+  { eco: 'B06', name: 'Modern Defense', moves: ['e4', 'g6'] },
+  { eco: 'B07', name: 'Pirc Defense', moves: ['e4', 'd6', 'd4', 'Nf6', 'Nc3', 'g6'] },
+  { eco: 'B10', name: 'Caro-Kann Defense', moves: ['e4', 'c6'] },
+  { eco: 'B12', name: 'Caro-Kann: Advance Variation', moves: ['e4', 'c6', 'd4', 'd5', 'e5'] },
+  { eco: 'B20', name: 'Sicilian Defense', moves: ['e4', 'c5'] },
+  { eco: 'B30', name: 'Sicilian Defense: Open', moves: ['e4', 'c5', 'Nf3'] },
+  { eco: 'B33', name: 'Sicilian Defense: Sveshnikov', moves: ['e4', 'c5', 'Nf3', 'Nc6', 'd4', 'cxd4', 'Nxd4', 'Nf6', 'Nc3', 'e5'] },
+  { eco: 'B50', name: 'Sicilian Defense: Modern Variations', moves: ['e4', 'c5', 'Nf3', 'd6'] },
+  { eco: 'B90', name: 'Sicilian Defense: Najdorf', moves: ['e4', 'c5', 'Nf3', 'd6', 'd4', 'cxd4', 'Nxd4', 'Nf6', 'Nc3', 'a6'] },
+  { eco: 'C00', name: 'French Defense', moves: ['e4', 'e6'] },
+  { eco: 'C02', name: 'French Defense: Advance Variation', moves: ['e4', 'e6', 'd4', 'd5', 'e5'] },
+  { eco: 'C20', name: 'Open Game', moves: ['e4', 'e5'] },
+  { eco: 'C25', name: 'Vienna Game', moves: ['e4', 'e5', 'Nc3'] },
+  { eco: 'C30', name: "King's Gambit", moves: ['e4', 'e5', 'f4'] },
+  { eco: 'C41', name: "Philidor Defense", moves: ['e4', 'e5', 'Nf3', 'd6'] },
+  { eco: 'C42', name: "Petrov's Defense", moves: ['e4', 'e5', 'Nf3', 'Nf6'] },
+  { eco: 'C44', name: 'Scotch Game', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'd4'] },
+  { eco: 'C46', name: 'Four Knights Game', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Nc3', 'Nf6'] },
+  { eco: 'C50', name: 'Italian Game', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4'] },
+  { eco: 'C54', name: 'Italian Game: Giuoco Piano', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Bc5'] },
+  { eco: 'C55', name: 'Two Knights Defense', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bc4', 'Nf6'] },
+  { eco: 'C60', name: 'Ruy Lopez', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5'] },
+  { eco: 'C65', name: 'Ruy Lopez: Berlin Defense', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'Nf6'] },
+  { eco: 'C70', name: 'Ruy Lopez: Morphy Defense', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6'] },
+  { eco: 'C78', name: 'Ruy Lopez: Archangel', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6', 'O-O', 'b5', 'Bb3', 'Bb7'] },
+  { eco: 'C80', name: 'Ruy Lopez: Open', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6', 'O-O', 'Nxe4'] },
+  { eco: 'C88', name: 'Ruy Lopez: Closed', moves: ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6', 'O-O', 'Be7'] },
+  { eco: 'D00', name: "Queen's Pawn Game", moves: ['d4', 'd5'] },
+  { eco: 'D02', name: 'London System', moves: ['d4', 'd5', 'Nf3', 'Nf6', 'Bf4'] },
+  { eco: 'D06', name: "Queen's Gambit", moves: ['d4', 'd5', 'c4'] },
+  { eco: 'D10', name: 'Slav Defense', moves: ['d4', 'd5', 'c4', 'c6'] },
+  { eco: 'D20', name: "Queen's Gambit Accepted", moves: ['d4', 'd5', 'c4', 'dxc4'] },
+  { eco: 'D30', name: "Queen's Gambit Declined", moves: ['d4', 'd5', 'c4', 'e6'] },
+  { eco: 'D37', name: "Queen's Gambit Declined: Orthodox", moves: ['d4', 'd5', 'c4', 'e6', 'Nf3', 'Nf6', 'Nc3', 'Be7'] },
+  { eco: 'E00', name: 'Catalan Opening', moves: ['d4', 'Nf6', 'c4', 'e6', 'g3'] },
+  { eco: 'E20', name: 'Nimzo-Indian Defense', moves: ['d4', 'Nf6', 'c4', 'e6', 'Nc3', 'Bb4'] },
+  { eco: 'E60', name: "King's Indian Defense", moves: ['d4', 'Nf6', 'c4', 'g6'] },
+  { eco: 'E97', name: "King's Indian Defense: Classical", moves: ['d4', 'Nf6', 'c4', 'g6', 'Nc3', 'Bg7', 'e4', 'd6', 'Nf3', 'O-O', 'Be2', 'e5'] },
+];
+
+const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+const promotionPieces: Array<Exclude<PieceSymbol, 'p' | 'k'>> = ['q', 'r', 'b', 'n'];
+const pieceMap: Record<string, string> = {
+  P: '♙',
+  N: '♘',
+  B: '♗',
+  R: '♖',
+  Q: '♕',
+  K: '♔',
+  p: '♟',
+  n: '♞',
+  b: '♝',
+  r: '♜',
+  q: '♛',
+  k: '♚',
+};
+
+const pieceNames: Record<PieceSymbol, string> = {
+  p: '兵',
+  n: '马',
+  b: '象',
+  r: '车',
+  q: '后',
+  k: '王',
+};
+
+function parsePgn(input: string): ParseResult {
+  const trimmed = input.trim();
+
+  if (!trimmed) {
+    return {
+      source: 'pgn',
+      positions: [],
+      moves: [],
+      error: '请粘贴 PGN 棋谱。',
+    };
+  }
+
+  try {
+    const loaded = new Chess();
+    loaded.loadPgn(trimmed);
+
+    const moves = loaded.history({ verbose: true });
+    const commentsByFen = new Map(
+      (loaded.getComments() as PgnComment[]).map(({ fen, comment }) => [fen, comment]),
+    );
+    const positions: ReplayPosition[] = [];
+
+    if (moves.length === 0) {
+      positions.push({
+        fen: loaded.fen(),
+        label: '当前局面',
+        comment: commentsByFen.get(loaded.fen()),
+      });
+    } else {
+      positions.push({
+        fen: moves[0].before,
+        label: '开局',
+        comment: commentsByFen.get(moves[0].before),
+      });
+
+      moves.forEach((move, index) => {
+        positions.push({
+          fen: move.after,
+          label: formatMoveLabel(move, index),
+          move,
+          comment: commentsByFen.get(move.after),
+        });
+      });
+    }
+
+    return { source: 'pgn', positions, moves };
+  } catch (error) {
+    return {
+      source: 'pgn',
+      positions: [],
+      moves: [],
+      error: error instanceof Error ? error.message : 'PGN 解析失败。',
+    };
+  }
+}
+
+function parseFen(input: string): ParseResult {
+  const lines = input
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return {
+      source: 'fen',
+      positions: [],
+      moves: [],
+      error: '请粘贴 FEN。多行 FEN 会作为局面序列复盘。',
+    };
+  }
+
+  const positions: ReplayPosition[] = [];
+
+  for (const [index, fen] of lines.entries()) {
+    try {
+      const game = new Chess(fen);
+      positions.push({
+        fen: game.fen(),
+        label: lines.length === 1 ? 'FEN 局面' : `局面 ${index + 1}`,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'FEN 无效。';
+      return {
+        source: 'fen',
+        positions: [],
+        moves: [],
+        error: `第 ${index + 1} 行 FEN 解析失败：${detail}`,
+      };
+    }
+  }
+
+  return { source: 'fen', positions, moves: [] };
+}
+
+function formatMoveLabel(move: Move, index: number) {
+  const moveNumber = Math.floor(index / 2) + 1;
+  const prefix = move.color === 'w' ? `${moveNumber}.` : `${moveNumber}...`;
+  return `${prefix} ${move.san}`;
+}
+
+function formatVariationMoveLabel(move: Move) {
+  const [, , , , , fullMove] = move.before.split(' ');
+  const prefix = move.color === 'w' ? `${fullMove}.` : `${fullMove}...`;
+  return `${prefix} ${move.san}`;
+}
+
+function getBoard(fen: string) {
+  const boardFen = fen.split(' ')[0];
+  return boardFen.split('/').map((rank) => {
+    const squares: string[] = [];
+
+    for (const char of rank) {
+      const emptySquares = Number(char);
+      if (Number.isInteger(emptySquares)) {
+        squares.push(...Array.from({ length: emptySquares }, () => ''));
+      } else {
+        squares.push(char);
+      }
+    }
+
+    return squares;
+  });
+}
+
+function describeFen(fen: string) {
+  const game = new Chess(fen);
+  const turn = game.turn() === 'w' ? '白方' : '黑方';
+
+  if (game.isCheckmate()) {
+    return `${turn}被将死`;
+  }
+
+  if (game.isDraw()) {
+    return '和棋局面';
+  }
+
+  if (game.isCheck()) {
+    return `${turn}被将军`;
+  }
+
+  return `${turn}走棋`;
+}
+
+function getCapturedPieces(fen: string): CapturedPieces {
+  const game = new Chess(fen);
+  const remaining = {
+    w: { p: 0, n: 0, b: 0, r: 0, q: 0 },
+    b: { p: 0, n: 0, b: 0, r: 0, q: 0 },
+  } satisfies Record<Color, Record<Exclude<PieceSymbol, 'k'>, number>>;
+
+  for (const row of game.board()) {
+    for (const piece of row) {
+      if (piece && piece.type !== 'k') {
+        remaining[piece.color][piece.type] += 1;
+      }
+    }
+  }
+
+  return {
+    w: expandCapturedPieces({ p: 8, n: 2, b: 2, r: 2, q: 1 }, remaining.w),
+    b: expandCapturedPieces({ p: 8, n: 2, b: 2, r: 2, q: 1 }, remaining.b),
+  };
+}
+
+function expandCapturedPieces(
+  starting: Record<Exclude<PieceSymbol, 'k'>, number>,
+  remaining: Record<Exclude<PieceSymbol, 'k'>, number>,
+) {
+  const order: Array<Exclude<PieceSymbol, 'k'>> = ['q', 'r', 'b', 'n', 'p'];
+  return order.flatMap((piece) =>
+    Array.from({ length: Math.max(starting[piece] - remaining[piece], 0) }, () => piece),
+  );
+}
+
+function getMoveHighlights(move?: Pick<Move, 'from' | 'to'> | null) {
+  return move ? [move.from, move.to] : [];
+}
+
+function isPromotionMove(fen: string, from: Square, to: Square) {
+  const game = new Chess(fen);
+  const piece = game.get(from);
+
+  if (!piece || piece.type !== 'p') {
+    return false;
+  }
+
+  return game
+    .moves({ square: from, verbose: true })
+    .some((move) => move.to === to && Boolean(move.promotion));
+}
+
+function parseStockfishInfo(line: string, fen: string): Partial<StockfishAnalysis> | null {
+  if (!line.startsWith('info ') || !line.includes(' score ') || !line.includes(' pv ')) {
+    return null;
+  }
+
+  const depthMatch = line.match(/\bdepth (\d+)/);
+  const cpMatch = line.match(/\bscore cp (-?\d+)/);
+  const mateMatch = line.match(/\bscore mate (-?\d+)/);
+  const pvMatch = line.match(/\bpv (.+)$/);
+  const turn = fen.split(' ')[1];
+
+  let score: StockfishAnalysis['score'] = null;
+  if (cpMatch) {
+    const rawScore = Number(cpMatch[1]);
+    score = {
+      type: 'cp',
+      value: turn === 'w' ? rawScore : -rawScore,
+    };
+  } else if (mateMatch) {
+    const rawMate = Number(mateMatch[1]);
+    score = {
+      type: 'mate',
+      value: turn === 'w' ? rawMate : -rawMate,
+    };
+  }
+
+  return {
+    depth: depthMatch ? Number(depthMatch[1]) : 0,
+    score,
+    pv: pvMatch ? formatPrincipalVariation(fen, pvMatch[1].split(/\s+/).slice(0, 8)) : [],
+  };
+}
+
+function formatPrincipalVariation(fen: string, uciMoves: string[]) {
+  const game = new Chess(fen);
+  const sanMoves: string[] = [];
+
+  for (const uci of uciMoves) {
+    const move = game.move(uciToMoveInput(uci));
+    if (!move) {
+      break;
+    }
+    sanMoves.push(move.san);
+  }
+
+  return sanMoves;
+}
+
+function uciToMoveInput(uci: string): MoveInput {
+  return {
+    from: uci.slice(0, 2) as Square,
+    to: uci.slice(2, 4) as Square,
+    promotion: uci[4] as MoveInput['promotion'],
+  };
+}
+
+function formatBestMove(fen: string, uciMove: string) {
+  if (!uciMove || uciMove === '(none)') {
+    return '';
+  }
+
+  const game = new Chess(fen);
+  const move = game.move(uciToMoveInput(uciMove));
+  return move?.san ?? uciMove;
+}
+
+function getPerspectiveLabel(perspective: EvaluationPerspective, fen: string, isBoardFlipped: boolean) {
+  if (perspective === 'white') {
+    return '白方视角';
+  }
+
+  if (perspective === 'sideToMove') {
+    return `${fen.split(' ')[1] === 'w' ? '白方' : '黑方'}走棋视角`;
+  }
+
+  return `${isBoardFlipped ? '黑方' : '白方'}棋盘视角`;
+}
+
+function getPerspectiveMultiplier(
+  perspective: EvaluationPerspective,
+  fen: string,
+  isBoardFlipped: boolean,
+) {
+  if (perspective === 'white') {
+    return 1;
+  }
+
+  if (perspective === 'sideToMove') {
+    return fen.split(' ')[1] === 'w' ? 1 : -1;
+  }
+
+  return isBoardFlipped ? -1 : 1;
+}
+
+function formatScore(
+  score: StockfishAnalysis['score'],
+  perspective: EvaluationPerspective,
+  fen: string,
+  isBoardFlipped: boolean,
+) {
+  if (!score) {
+    return '等待评分';
+  }
+
+  const multiplier = getPerspectiveMultiplier(perspective, fen, isBoardFlipped);
+  const perspectiveLabel = getPerspectiveLabel(perspective, fen, isBoardFlipped);
+
+  if (score.type === 'mate') {
+    const value = score.value * multiplier;
+    return `${perspectiveLabel} ${value >= 0 ? '+' : '-'}M${Math.abs(value)}`;
+  }
+
+  const pawns = (score.value * multiplier) / 100;
+  return `${perspectiveLabel} ${pawns >= 0 ? '+' : ''}${pawns.toFixed(2)}`;
+}
+
+function identifyOpening(playedMoves: string[]): OpeningMatch {
+  if (playedMoves.length === 0) {
+    return {
+      eco: 'A00',
+      name: '初始局面',
+      status: 'start',
+      matchedPly: 0,
+      nextBookMove: openingBook.find((entry) => entry.name === "King's Pawn Game")?.moves[0],
+    };
+  }
+
+  const prefixCandidates = openingBook
+    .filter((entry) => playedMoves.every((move, index) => entry.moves[index] === move))
+    .sort((a, b) => {
+      const exactA = a.moves.length === playedMoves.length ? 0 : 1;
+      const exactB = b.moves.length === playedMoves.length ? 0 : 1;
+      if (exactA !== exactB) {
+        return exactA - exactB;
+      }
+      return a.moves.length - b.moves.length;
+    });
+
+  if (prefixCandidates[0]) {
+    const entry = prefixCandidates[0];
+    return {
+      eco: entry.eco,
+      name: entry.name,
+      status: playedMoves.length < entry.moves.length ? 'book' : 'recognized',
+      matchedPly: playedMoves.length,
+      nextBookMove: entry.moves[playedMoves.length],
+    };
+  }
+
+  const recognizedCandidates = openingBook
+    .filter((entry) => entry.moves.length > 0 && entry.moves.every((move, index) => playedMoves[index] === move))
+    .sort((a, b) => b.moves.length - a.moves.length);
+
+  if (recognizedCandidates[0]) {
+    const entry = recognizedCandidates[0];
+    return {
+      eco: entry.eco,
+      name: entry.name,
+      status: 'recognized',
+      matchedPly: entry.moves.length,
+    };
+  }
+
+  const closest = openingBook
+    .map((entry) => ({
+      entry,
+      matchedPly: countCommonPrefix(entry.moves, playedMoves),
+    }))
+    .filter(({ matchedPly }) => matchedPly > 0)
+    .sort((a, b) => b.matchedPly - a.matchedPly || b.entry.moves.length - a.entry.moves.length)[0];
+
+  if (closest) {
+    return {
+      eco: closest.entry.eco,
+      name: closest.entry.name,
+      status: 'deviation',
+      matchedPly: closest.matchedPly,
+      deviationMove: playedMoves[closest.matchedPly],
+      nextBookMove: closest.entry.moves[closest.matchedPly],
+    };
+  }
+
+  return {
+    eco: '-',
+    name: '未知开局',
+    status: 'unknown',
+    matchedPly: 0,
+  };
+}
+
+function countCommonPrefix(expected: string[], actual: string[]) {
+  let count = 0;
+  while (count < expected.length && count < actual.length && expected[count] === actual[count]) {
+    count += 1;
+  }
+  return count;
+}
+
+function normalizeSan(san: string) {
+  return san.replace(/[+#?!]+/g, '');
+}
+
+function getTrainingExplanation({
+  analysis,
+  nextMove,
+  isVariationMode,
+  perspective,
+  fen,
+  isBoardFlipped,
+}: {
+  analysis: StockfishAnalysis | null;
+  nextMove?: Move;
+  isVariationMode: boolean;
+  perspective: EvaluationPerspective;
+  fen: string;
+  isBoardFlipped: boolean;
+}) {
+  if (!analysis || (!analysis.bestMoveSan && analysis.depth === 0)) {
+    return '开启 Stockfish 后，这里会解释当前局面的首选计划。';
+  }
+
+  const scoreText = analysis.score
+    ? `当前评估：${formatScore(analysis.score, perspective, fen, isBoardFlipped)}。`
+    : '';
+  const bestMoveText = analysis.bestMoveSan
+    ? `引擎首选是 ${analysis.bestMoveSan}。`
+    : '暂未得到明确最佳手。';
+  const pvText = analysis.pv.length ? `主线：${analysis.pv.join(' ')}。` : '';
+
+  if (isVariationMode) {
+    return [scoreText, bestMoveText, '当前是在试走变化图中，可用它检查这个分支是否站得住。', pvText]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  if (!nextMove) {
+    return [scoreText, bestMoveText, '当前已经是棋谱末尾。', pvText].filter(Boolean).join(' ');
+  }
+
+  const nextMoveMatches =
+    analysis.bestMoveSan && normalizeSan(nextMove.san) === normalizeSan(analysis.bestMoveSan);
+
+  if (nextMoveMatches) {
+    return [scoreText, `棋谱下一手 ${nextMove.san} 与 Stockfish 首选一致。`, pvText]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  return [
+    scoreText,
+    `棋谱下一手是 ${nextMove.san}，Stockfish 首选是 ${analysis.bestMoveSan || analysis.bestMove || '未知'}。`,
+    '这通常是值得重点复盘的分歧点。',
+    pvText,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function getPositionNoteKey(mode: ReplayMode, text: string, index: number, fen: string) {
+  let hash = 0;
+
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+
+  return `${mode}:${hash}:${index}:${fen}`;
+}
+
+function loadStoredNotes() {
+  try {
+    const rawNotes = window.localStorage.getItem(notesStorageKey);
+    if (!rawNotes) {
+      return {};
+    }
+
+    const parsed = JSON.parse(rawNotes);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStoredNotes(notes: Record<string, string>) {
+  window.localStorage.setItem(notesStorageKey, JSON.stringify(notes));
+}
+
+async function copyText(textToCopy: string) {
+  if (navigator.clipboard) {
+    await navigator.clipboard.writeText(textToCopy);
+    return;
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = textToCopy;
+  textArea.setAttribute('readonly', '');
+  textArea.style.position = 'fixed';
+  textArea.style.opacity = '0';
+  document.body.appendChild(textArea);
+  textArea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textArea);
+}
+
+function downloadText(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'application/x-chess-pgn;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function mergeComments(originalComment: string | undefined, note: string) {
+  const trimmedNote = note.trim();
+
+  if (!trimmedNote) {
+    return originalComment;
+  }
+
+  return [originalComment, `我的笔记: ${trimmedNote}`].filter(Boolean).join(' | ');
+}
+
+function exportPgnWithNotes(
+  text: string,
+  positions: ReplayPosition[],
+  notesByPosition: Record<string, string>,
+  savedVariations: SavedVariation[],
+) {
+  const loaded = new Chess();
+  loaded.loadPgn(text);
+  const headers = loaded.getHeaders();
+  const moves = loaded.history({ verbose: true });
+  const exported = new Chess(positions[0]?.fen);
+
+  for (const [key, value] of Object.entries(headers)) {
+    if (value) {
+      exported.header(key, value);
+    }
+  }
+
+  if (positions[0]) {
+    const openingComment = mergeComments(
+      positions[0].comment,
+      notesByPosition[getPositionNoteKey('pgn', text, 0, positions[0].fen)] ?? '',
+    );
+
+    if (openingComment) {
+      exported.setComment(openingComment);
+    }
+  }
+
+  moves.forEach((move, index) => {
+    exported.move(move.lan);
+    const position = positions[index + 1];
+    const note = position
+      ? notesByPosition[getPositionNoteKey('pgn', text, index + 1, position.fen)] ?? ''
+      : '';
+    const comment = mergeComments(position?.comment, note);
+
+    if (comment) {
+      exported.setComment(comment);
+    }
+  });
+
+  return insertSavedVariationsIntoPgn(exported.pgn(), positions, savedVariations);
+}
+
+function insertSavedVariationsIntoPgn(
+  pgn: string,
+  positions: ReplayPosition[],
+  savedVariations: SavedVariation[],
+) {
+  const sortedVariations = savedVariations
+    .filter((variation) => variation.moves.length > 0)
+    .sort((a, b) => b.baseIndex - a.baseIndex);
+
+  return sortedVariations.reduce((currentPgn, variation) => {
+    const marker = getPgnInsertionMarker(positions, variation.baseIndex);
+    const variationText = buildVariationPgn(variation.baseFen, variation.moves);
+
+    if (!marker || !variationText) {
+      return currentPgn;
+    }
+
+    const markerIndex =
+      variation.baseIndex <= 0 ? currentPgn.indexOf(marker) : findNthMoveToken(currentPgn, marker, variation.baseIndex);
+    if (markerIndex < 0) {
+      return currentPgn;
+    }
+
+    const insertAt = markerIndex + marker.length;
+    return `${currentPgn.slice(0, insertAt)} (${variationText})${currentPgn.slice(insertAt)}`;
+  }, pgn);
+}
+
+function getPgnInsertionMarker(positions: ReplayPosition[], baseIndex: number) {
+  if (baseIndex <= 0) {
+    return '\n\n';
+  }
+
+  return positions[baseIndex]?.move?.san;
+}
+
+function findNthMoveToken(pgn: string, san: string, occurrence: number) {
+  const escapedSan = san.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matcher = new RegExp(`(^|\\s)${escapedSan}(?=\\s|\\{|\\(|\\*|1-0|0-1|1\\/2-1\\/2)`, 'g');
+  let match: RegExpExecArray | null;
+  let seen = 0;
+
+  while ((match = matcher.exec(pgn))) {
+    seen += 1;
+    if (seen === occurrence) {
+      return match.index + match[1].length;
+    }
+  }
+
+  return -1;
+}
+
+function buildVariationPgn(baseFen: string, lanMoves: string[]) {
+  const game = new Chess(baseFen);
+  const tokens: string[] = [];
+
+  lanMoves.forEach((lan) => {
+    const moveNumber = game.fen().split(' ')[5];
+    const color = game.turn();
+    const move = game.move(lan);
+
+    if (!move) {
+      return;
+    }
+
+    const prefix =
+      color === 'w'
+        ? `${moveNumber}.`
+        : tokens.length === 0
+          ? `${moveNumber}...`
+          : '';
+    tokens.push([prefix, move.san].filter(Boolean).join(' '));
+  });
+
+  return tokens.join(' ');
+}
+
+function App() {
+  const [mode, setMode] = useState<ReplayMode>('pgn');
+  const [text, setText] = useState(initialPgn);
+  const [positionIndex, setPositionIndex] = useState(0);
+  const [isBoardFlipped, setIsBoardFlipped] = useState(false);
+  const [evaluationPerspective, setEvaluationPerspective] = useState<EvaluationPerspective>('white');
+  const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
+  const [variationPositions, setVariationPositions] = useState<VariationPosition[]>([]);
+  const [variationIndex, setVariationIndex] = useState(-1);
+  const [notesByPosition, setNotesByPosition] = useState<Record<string, string>>(() =>
+    typeof window === 'undefined' ? {} : loadStoredNotes(),
+  );
+  const [pendingPromotion, setPendingPromotion] = useState<PendingPromotion | null>(null);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [engineStatus, setEngineStatus] = useState<EngineStatus>('idle');
+  const [analysis, setAnalysis] = useState<StockfishAnalysis | null>(null);
+  const [isAnalysisEnabled, setIsAnalysisEnabled] = useState(false);
+  const [engineMode, setEngineMode] = useState<EngineMode>('wasm');
+  const [engineLog, setEngineLog] = useState<string[]>([]);
+  const [savedVariations, setSavedVariations] = useState<SavedVariation[]>([]);
+  const engineRef = useRef<Worker | null>(null);
+  const engineReadyRef = useRef(false);
+  const engineReadyTimerRef = useRef<number | null>(null);
+  const engineModeRef = useRef<EngineMode>('wasm');
+  const analysisFenRef = useRef('');
+
+  const result = useMemo(
+    () => (mode === 'pgn' ? parsePgn(text) : parseFen(text)),
+    [mode, text],
+  );
+
+  const maxIndex = Math.max(result.positions.length - 1, 0);
+  const safeIndex = Math.min(positionIndex, maxIndex);
+  const current = result.positions[safeIndex];
+  const originalFen = current?.fen ?? new Chess().fen();
+  const currentNoteKey = current ? getPositionNoteKey(mode, text, safeIndex, current.fen) : '';
+  const currentNote = currentNoteKey ? notesByPosition[currentNoteKey] ?? '' : '';
+  const activeVariation = variationIndex >= 0 ? variationPositions[variationIndex] : null;
+  const activeFen = activeVariation?.fen ?? originalFen;
+  const board = getBoard(activeFen);
+  const status = current ? describeFen(activeFen) : '等待输入';
+  const isVariationMode = variationPositions.length > 0;
+  const legalTargets = selectedSquare ? getLegalTargets(activeFen, selectedSquare) : [];
+  const lastMoveSquares = getMoveHighlights(activeVariation?.move ?? current?.move);
+  const capturedPieces = getCapturedPieces(activeFen);
+  const playedMoves = useMemo(() => {
+    const originalMoves = result.moves.slice(0, safeIndex).map((move) => move.san);
+    const activeVariationMoves =
+      variationIndex >= 0 ? variationPositions.slice(0, variationIndex + 1).map((position) => position.move.san) : [];
+    return [...originalMoves, ...activeVariationMoves];
+  }, [result.moves, safeIndex, variationIndex, variationPositions]);
+  const openingMatch = useMemo(() => identifyOpening(playedMoves), [playedMoves]);
+  const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === 'TEXTAREA' ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+
+      if (isTyping || pendingPromotion) {
+        return;
+      }
+
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goBackward();
+      }
+
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goForward();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [pendingPromotion, positionIndex, variationIndex, variationPositions.length, maxIndex]);
+
+  useEffect(() => {
+    saveStoredNotes(notesByPosition);
+  }, [notesByPosition]);
+
+  useEffect(() => {
+    return () => {
+      if (engineReadyTimerRef.current) {
+        window.clearTimeout(engineReadyTimerRef.current);
+      }
+      engineRef.current?.postMessage('quit');
+      engineRef.current?.terminate();
+      engineRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setToast(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const showToast = (message: ToastMessage) => {
+    setToast(message);
+  };
+
+  const addEngineLog = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setEngineLog((logs) => [`${timestamp} ${message}`, ...logs].slice(0, 8));
+  };
+
+  const createStockfishWorker = (mode: EngineMode) => {
+    if (mode === 'asm') {
+      return new Worker(new URL(stockfishAsmWorkerUrl, window.location.origin).href);
+    }
+
+    const workerUrl = new URL(stockfishWorkerUrl, window.location.origin);
+    const wasmUrl = new URL(stockfishWasmUrl, window.location.origin);
+    workerUrl.hash = encodeURIComponent(wasmUrl.href);
+    return new Worker(workerUrl.href);
+  };
+
+  const clearEngineReadyTimer = () => {
+    if (engineReadyTimerRef.current) {
+      window.clearTimeout(engineReadyTimerRef.current);
+      engineReadyTimerRef.current = null;
+    }
+  };
+
+  const getEngine = (mode: EngineMode = engineModeRef.current) => {
+    if (engineRef.current) {
+      return engineRef.current;
+    }
+
+    setEngineStatus('loading');
+    engineModeRef.current = mode;
+    setEngineMode(mode);
+    addEngineLog(`启动 ${mode === 'wasm' ? 'WASM' : 'ASM'} 引擎`);
+    const worker = createStockfishWorker(mode);
+    engineReadyRef.current = false;
+
+    worker.onmessage = (event: MessageEvent<string>) => {
+      const line = String(event.data);
+
+      if (line === 'readyok') {
+        engineReadyRef.current = true;
+        clearEngineReadyTimer();
+        addEngineLog(`${engineModeRef.current.toUpperCase()} ready`);
+        setEngineStatus((status) => (status === 'loading' ? 'ready' : status));
+      }
+
+      const currentFen = analysisFenRef.current;
+      const partialAnalysis = parseStockfishInfo(line, currentFen);
+      if (partialAnalysis) {
+        setAnalysis((currentAnalysis) => ({
+          depth: partialAnalysis.depth ?? currentAnalysis?.depth ?? 0,
+          score: partialAnalysis.score ?? currentAnalysis?.score ?? null,
+          pv: partialAnalysis.pv ?? currentAnalysis?.pv ?? [],
+          bestMove: currentAnalysis?.bestMove ?? '',
+          bestMoveSan: currentAnalysis?.bestMoveSan ?? '',
+        }));
+      }
+
+      if (line.startsWith('bestmove ')) {
+        const bestMove = line.split(/\s+/)[1] ?? '';
+        addEngineLog(`bestmove ${bestMove}`);
+        setAnalysis((currentAnalysis) => ({
+          depth: currentAnalysis?.depth ?? 0,
+          score: currentAnalysis?.score ?? null,
+          pv: currentAnalysis?.pv ?? [],
+          bestMove,
+          bestMoveSan: formatBestMove(currentFen, bestMove),
+        }));
+        setEngineStatus('ready');
+      }
+    };
+
+    worker.onerror = (event) => {
+      const detail = event.message ? `：${event.message}` : '';
+      worker.terminate();
+      engineRef.current = null;
+      clearEngineReadyTimer();
+
+      if (engineModeRef.current === 'wasm') {
+        addEngineLog(`WASM 错误${detail || ''}，切换 ASM`);
+        showToast({ type: 'error', text: `WASM 引擎启动失败${detail}，正在切换兼容模式。` });
+        getEngine('asm');
+        window.setTimeout(() => {
+          if (analysisFenRef.current) {
+            startAnalysisForFen(analysisFenRef.current);
+          }
+        }, 200);
+        return;
+      }
+
+      setEngineStatus('error');
+      showToast({ type: 'error', text: `Stockfish 启动失败${detail}` });
+    };
+
+    worker.postMessage('uci');
+    worker.postMessage('isready');
+    worker.postMessage('setoption name MultiPV value 1');
+    engineReadyTimerRef.current = window.setTimeout(() => {
+      if (!engineReadyRef.current) {
+        engineRef.current?.terminate();
+        engineRef.current = null;
+        clearEngineReadyTimer();
+
+        if (engineModeRef.current === 'wasm') {
+          addEngineLog('WASM 加载超时，切换 ASM');
+          showToast({ type: 'error', text: 'WASM 引擎加载超时，正在切换兼容模式。' });
+          getEngine('asm');
+          window.setTimeout(() => {
+            if (analysisFenRef.current) {
+              startAnalysisForFen(analysisFenRef.current);
+            }
+          }, 200);
+          return;
+        }
+
+        setEngineStatus('error');
+        showToast({ type: 'error', text: 'Stockfish 加载超时，请刷新页面后重试。' });
+      }
+    }, 8000);
+    engineRef.current = worker;
+    return worker;
+  };
+
+  const startAnalysisForFen = (fen: string) => {
+    try {
+      const engine = getEngine();
+      analysisFenRef.current = fen;
+      setAnalysis({
+        depth: 0,
+        score: null,
+        bestMove: '',
+        bestMoveSan: '',
+        pv: [],
+      });
+      setEngineStatus('analyzing');
+      engine.postMessage('stop');
+      engine.postMessage('ucinewgame');
+      engine.postMessage(`position fen ${fen}`);
+      engine.postMessage('go depth 14');
+    } catch {
+      setEngineStatus('error');
+      showToast({ type: 'error', text: 'Stockfish 无法启动。' });
+    }
+  };
+
+  useEffect(() => {
+    engineRef.current?.postMessage('stop');
+    setAnalysis(null);
+
+    if (!isAnalysisEnabled) {
+      setEngineStatus((status) => (status === 'analyzing' ? 'ready' : status));
+      return;
+    }
+
+    const timer = window.setTimeout(() => startAnalysisForFen(activeFen), 120);
+    return () => window.clearTimeout(timer);
+  }, [activeFen, isAnalysisEnabled]);
+
+  const analyzeCurrentPosition = () => {
+    setIsAnalysisEnabled(true);
+    startAnalysisForFen(activeFen);
+  };
+
+  const stopAnalysis = () => {
+    setIsAnalysisEnabled(false);
+    engineRef.current?.postMessage('stop');
+    setEngineStatus(engineRef.current ? 'ready' : 'idle');
+  };
+
+  const updatePositionIndex = (nextIndex: number | ((index: number) => number)) => {
+    setPositionIndex(nextIndex);
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+  };
+
+  const updateMode = (nextMode: ReplayMode) => {
+    setMode(nextMode);
+    setText(nextMode === 'pgn' ? initialPgn : initialFen);
+    setPositionIndex(0);
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+  };
+
+  const updateText = (value: string) => {
+    setText(value);
+    setPositionIndex(0);
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+  };
+
+  const updateCurrentNote = (value: string) => {
+    if (!currentNoteKey) {
+      return;
+    }
+
+    setNotesByPosition((notes) => ({
+      ...notes,
+      [currentNoteKey]: value,
+    }));
+  };
+
+  const importPgnFile = async (file: File | null) => {
+    if (!file) {
+      return;
+    }
+
+    try {
+      const importedText = await file.text();
+      const validation = parsePgn(importedText);
+
+      if (validation.error) {
+        showToast({ type: 'error', text: `导入失败：${validation.error}` });
+        return;
+      }
+
+      setMode('pgn');
+      updateText(importedText);
+      showToast({ type: 'success', text: `已导入 ${file.name}` });
+    } catch {
+      showToast({ type: 'error', text: '导入失败：无法读取文件。' });
+    }
+  };
+
+  const exportCurrentPgn = () => {
+    if (mode !== 'pgn' || result.error) {
+      showToast({ type: 'error', text: '当前内容不是可导出的 PGN。' });
+      return;
+    }
+
+    try {
+      const exportedPgn = exportPgnWithNotes(text, result.positions, notesByPosition, savedVariations);
+      downloadText('chess-me-review.pgn', exportedPgn);
+      showToast({ type: 'success', text: '已导出 PGN。' });
+    } catch {
+      showToast({ type: 'error', text: '导出失败：PGN 无法重新生成。' });
+    }
+  };
+
+  const copyCurrentFen = async () => {
+    try {
+      await copyText(activeFen);
+      showToast({ type: 'success', text: '已复制当前 FEN。' });
+    } catch {
+      showToast({ type: 'error', text: '复制失败：浏览器拒绝了剪贴板操作。' });
+    }
+  };
+
+  const restoreOriginalPosition = () => {
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+  };
+
+  const saveCurrentVariation = () => {
+    if (!current || variationPositions.length === 0) {
+      return;
+    }
+
+    const retainedPositions = variationPositions.slice(0, variationIndex + 1);
+
+    if (retainedPositions.length === 0) {
+      showToast({ type: 'error', text: '请先停在要保存的变化线末尾。' });
+      return;
+    }
+
+    const savedVariation: SavedVariation = {
+      id: `${Date.now()}`,
+      baseIndex: safeIndex,
+      baseFen: originalFen,
+      moves: retainedPositions.map((position) => position.move.lan),
+      labels: retainedPositions.map((position) => position.label),
+    };
+
+    setSavedVariations((variations) => [...variations, savedVariation]);
+    showToast({ type: 'success', text: '已保存当前变化线，导出 PGN 时会写入分支。' });
+  };
+
+  const deleteSavedVariation = (id: string) => {
+    setSavedVariations((variations) => variations.filter((variation) => variation.id !== id));
+  };
+
+  const undoVariationMove = () => {
+    if (variationPositions.length === 0) {
+      return;
+    }
+
+    setVariationPositions((positions) => {
+      const nextPositions =
+        variationIndex >= 0 ? positions.slice(0, variationIndex) : positions.slice(0, -1);
+      setVariationIndex(nextPositions.length - 1);
+      return nextPositions;
+    });
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+  };
+
+  const goBackward = () => {
+    if (variationIndex >= 0) {
+      setVariationIndex((index) => index - 1);
+      setSelectedSquare(null);
+      return;
+    }
+
+    updatePositionIndex((index) => Math.max(index - 1, 0));
+  };
+
+  const goForward = () => {
+    if (variationPositions.length > 0 && variationIndex < variationPositions.length - 1) {
+      setVariationIndex((index) => index + 1);
+      setSelectedSquare(null);
+      return;
+    }
+
+    updatePositionIndex((index) => Math.min(index + 1, maxIndex));
+  };
+
+  const commitMove = ({ from, to, promotion }: MoveInput) => {
+    const game = new Chess(activeFen);
+    const move = game.move({ from, to, promotion });
+
+    if (!move) {
+      return false;
+    }
+
+    setVariationPositions((positions) => {
+      const retainedPositions = positions.slice(0, variationIndex + 1);
+      const nextPositions = [
+        ...retainedPositions,
+        {
+          fen: game.fen(),
+          label: formatVariationMoveLabel(move),
+          move,
+        },
+      ];
+      setVariationIndex(nextPositions.length - 1);
+      return nextPositions;
+    });
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+    return true;
+  };
+
+  const tryMove = (from: Square, to: Square) => {
+    if (isPromotionMove(activeFen, from, to)) {
+      setPendingPromotion({ from, to });
+      setSelectedSquare(null);
+      return true;
+    }
+
+    return commitMove({ from, to });
+  };
+
+  const handleDragStart = (square: Square, event: DragEvent<HTMLButtonElement>) => {
+    event.dataTransfer.setData('text/plain', square);
+    event.dataTransfer.effectAllowed = 'move';
+    setSelectedSquare(square);
+  };
+
+  const handleDrop = (square: Square, event: DragEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const from = event.dataTransfer.getData('text/plain') as Square;
+
+    if (from) {
+      tryMove(from, square);
+    }
+  };
+
+  const handleSquareClick = (square: Square) => {
+    if (!current) {
+      return;
+    }
+
+    const game = new Chess(activeFen);
+    const clickedPiece = game.get(square);
+
+    if (!selectedSquare) {
+      if (clickedPiece && clickedPiece.color === game.turn()) {
+        setSelectedSquare(square);
+      }
+      return;
+    }
+
+    if (selectedSquare === square) {
+      setSelectedSquare(null);
+      return;
+    }
+
+    if (clickedPiece && clickedPiece.color === game.turn()) {
+      setSelectedSquare(square);
+      return;
+    }
+
+    if (tryMove(selectedSquare, square)) {
+      return;
+    }
+
+    setSelectedSquare(null);
+  };
+
+  return (
+    <main className="app-shell">
+      <section className="workspace" aria-label="国际象棋复盘器">
+        <div className="board-area">
+          <div className="top-bar">
+            <div>
+              <p className="eyebrow">Chess Me</p>
+              <h1>复盘训练</h1>
+            </div>
+            <div className="top-actions">
+              <button
+                type="button"
+                className="orientation-button"
+                onClick={() => setIsBoardFlipped((flipped) => !flipped)}
+                aria-pressed={isBoardFlipped}
+              >
+                {isBoardFlipped ? '黑方视角' : '白方视角'}
+              </button>
+              <div className="status-pill">{status}</div>
+            </div>
+          </div>
+
+          <ChessBoard
+            board={board}
+            flipped={isBoardFlipped}
+            selectedSquare={selectedSquare}
+            legalTargets={legalTargets}
+            lastMoveSquares={lastMoveSquares}
+            onSquareClick={handleSquareClick}
+            onDragStart={handleDragStart}
+            onDrop={handleDrop}
+          />
+
+          <CapturedPiecesDisplay capturedPieces={capturedPieces} />
+
+          <div className="replay-controls" aria-label="复盘控制">
+            <button type="button" onClick={() => updatePositionIndex(0)} disabled={safeIndex === 0}>
+              |&lt;
+            </button>
+            <button
+              type="button"
+              onClick={goBackward}
+              disabled={safeIndex === 0 && variationIndex < 0}
+            >
+              &lt;
+            </button>
+            <div className="move-counter">
+              {current?.label ?? '无局面'} · {safeIndex + 1}/{result.positions.length || 1}
+            </div>
+            <button
+              type="button"
+              onClick={goForward}
+              disabled={safeIndex >= maxIndex && variationIndex >= variationPositions.length - 1}
+            >
+              &gt;
+            </button>
+            <button
+              type="button"
+              onClick={() => updatePositionIndex(maxIndex)}
+              disabled={safeIndex >= maxIndex}
+            >
+              &gt;|
+            </button>
+          </div>
+
+          <div className="variation-panel">
+            <div>
+              <span className="variation-label">{isVariationMode ? '变化图' : '原棋谱'}</span>
+              <p>
+                {isVariationMode
+                  ? `已试走 ${variationPositions.length} 手，当前在${
+                      activeVariation?.label ?? '原局面'
+                    }。`
+                  : '点击棋子后选择目标格，可临时试走。'}
+              </p>
+            </div>
+            <button type="button" onClick={restoreOriginalPosition} disabled={!isVariationMode}>
+              恢复原局面
+            </button>
+            <button type="button" onClick={undoVariationMove} disabled={!isVariationMode}>
+              悔一步
+            </button>
+            <button type="button" onClick={saveCurrentVariation} disabled={!isVariationMode}>
+              保存变化
+            </button>
+          </div>
+
+          <SavedVariationsPanel
+            variations={savedVariations}
+            onDelete={deleteSavedVariation}
+          />
+
+          <StockfishPanel
+            status={engineStatus}
+            analysis={analysis}
+            isEnabled={isAnalysisEnabled}
+            mode={engineMode}
+            logs={engineLog}
+            nextMove={nextOriginalMove}
+            isVariationMode={Boolean(activeVariation)}
+            fen={activeFen}
+            isBoardFlipped={isBoardFlipped}
+            perspective={evaluationPerspective}
+            onPerspectiveChange={setEvaluationPerspective}
+            onAnalyze={analyzeCurrentPosition}
+            onStop={stopAnalysis}
+          />
+
+          <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} />
+
+          {current && (
+            <TrainingNotes
+              pgnComment={current.comment}
+              note={currentNote}
+              onNoteChange={updateCurrentNote}
+            />
+          )}
+
+          <div className="fen-display">
+            <span>FEN</span>
+            <code>{activeFen}</code>
+          </div>
+        </div>
+
+        <aside className="side-panel">
+          <ImportExportTools
+            canExportPgn={mode === 'pgn' && !result.error}
+            onImportPgn={importPgnFile}
+            onExportPgn={exportCurrentPgn}
+            onCopyFen={copyCurrentFen}
+          />
+
+          <div className="mode-switch" role="tablist" aria-label="棋谱格式">
+            <button
+              type="button"
+              className={mode === 'pgn' ? 'active' : ''}
+              onClick={() => updateMode('pgn')}
+              role="tab"
+              aria-selected={mode === 'pgn'}
+            >
+              PGN
+            </button>
+            <button
+              type="button"
+              className={mode === 'fen' ? 'active' : ''}
+              onClick={() => updateMode('fen')}
+              role="tab"
+              aria-selected={mode === 'fen'}
+            >
+              FEN
+            </button>
+          </div>
+
+          <label className="input-block">
+            <span>{mode === 'pgn' ? '粘贴 PGN 棋谱' : '粘贴 FEN 局面'}</span>
+            <textarea
+              value={text}
+              onChange={(event) => updateText(event.target.value)}
+              spellCheck={false}
+            />
+          </label>
+
+          {result.error ? (
+            <div className="error-box">{result.error}</div>
+          ) : (
+            <MoveList
+              source={result.source}
+              moves={result.moves}
+              positions={result.positions}
+              activeIndex={safeIndex}
+              variationPositions={variationPositions}
+              activeVariationIndex={variationIndex}
+              notesByPosition={notesByPosition}
+              noteContext={{ mode, text }}
+              onSelect={updatePositionIndex}
+              onVariationSelect={(index) => {
+                setVariationIndex(index);
+                setSelectedSquare(null);
+              }}
+            />
+          )}
+        </aside>
+      </section>
+
+      {pendingPromotion && (
+        <PromotionDialog
+          turn={new Chess(activeFen).turn()}
+          onSelect={(promotion) =>
+            commitMove({
+              from: pendingPromotion.from,
+              to: pendingPromotion.to,
+              promotion,
+            })
+          }
+          onCancel={() => setPendingPromotion(null)}
+        />
+      )}
+
+      {toast && <div className={`toast ${toast.type}`}>{toast.text}</div>}
+    </main>
+  );
+}
+
+function getLegalTargets(fen: string, square: Square) {
+  const game = new Chess(fen);
+  return game.moves({ square, verbose: true }).map((move) => move.to);
+}
+
+function ImportExportTools({
+  canExportPgn,
+  onImportPgn,
+  onExportPgn,
+  onCopyFen,
+}: {
+  canExportPgn: boolean;
+  onImportPgn: (file: File | null) => void;
+  onExportPgn: () => void;
+  onCopyFen: () => void;
+}) {
+  return (
+    <div className="file-tools" aria-label="导入导出">
+      <label className="file-import">
+        导入 PGN
+        <input
+          type="file"
+          accept=".pgn,application/x-chess-pgn,text/plain"
+          onChange={(event) => {
+            onImportPgn(event.target.files?.[0] ?? null);
+            event.target.value = '';
+          }}
+        />
+      </label>
+      <button type="button" onClick={onExportPgn} disabled={!canExportPgn}>
+        导出 PGN
+      </button>
+      <button type="button" onClick={onCopyFen}>
+        复制 FEN
+      </button>
+    </div>
+  );
+}
+
+function ChessBoard({
+  board,
+  flipped,
+  selectedSquare,
+  legalTargets,
+  lastMoveSquares,
+  onSquareClick,
+  onDragStart,
+  onDrop,
+}: {
+  board: string[][];
+  flipped: boolean;
+  selectedSquare: Square | null;
+  legalTargets: Square[];
+  lastMoveSquares: Square[];
+  onSquareClick: (square: Square) => void;
+  onDragStart: (square: Square, event: DragEvent<HTMLButtonElement>) => void;
+  onDrop: (square: Square, event: DragEvent<HTMLButtonElement>) => void;
+}) {
+  const rankIndexes = flipped ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
+  const fileIndexes = flipped ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
+
+  return (
+    <div className="board-wrap">
+      <div className="board" aria-label="棋盘">
+        {rankIndexes.map((rankIndex, visibleRankIndex) =>
+          fileIndexes.map((fileIndex, visibleFileIndex) => {
+            const piece = board[rankIndex][fileIndex];
+            const light = (rankIndex + fileIndex) % 2 === 0;
+            const square = `${files[fileIndex]}${8 - rankIndex}` as Square;
+            const showFileCoordinate = visibleRankIndex === rankIndexes.length - 1;
+            const showRankCoordinate = visibleFileIndex === 0;
+            const selected = selectedSquare === square;
+            const legalTarget = legalTargets.includes(square);
+            const lastMove = lastMoveSquares.includes(square);
+
+            return (
+              <button
+                type="button"
+                key={square}
+                className={`square ${light ? 'light' : 'dark'} ${selected ? 'selected' : ''} ${
+                  legalTarget ? 'legal-target' : ''
+                } ${lastMove ? 'last-move' : ''}`}
+                aria-label={piece ? `${square} ${piece}` : square}
+                draggable={Boolean(piece)}
+                onClick={() => onSquareClick(square)}
+                onDragStart={(event) => onDragStart(square, event)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => onDrop(square, event)}
+              >
+                <span className="coordinate file">{showFileCoordinate ? files[fileIndex] : ''}</span>
+                <span className="coordinate rank">{showRankCoordinate ? 8 - rankIndex : ''}</span>
+                {piece && <span className="piece">{pieceMap[piece]}</span>}
+              </button>
+            );
+          }),
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CapturedPiecesDisplay({ capturedPieces }: { capturedPieces: CapturedPieces }) {
+  return (
+    <div className="captured-panel" aria-label="被吃子">
+      <CapturedSide title="白方被吃" color="w" pieces={capturedPieces.w} />
+      <CapturedSide title="黑方被吃" color="b" pieces={capturedPieces.b} />
+    </div>
+  );
+}
+
+function CapturedSide({
+  title,
+  color,
+  pieces,
+}: {
+  title: string;
+  color: Color;
+  pieces: PieceSymbol[];
+}) {
+  return (
+    <div className="captured-side">
+      <span>{title}</span>
+      <div>
+        {pieces.length === 0 ? (
+          <em>无</em>
+        ) : (
+          pieces.map((piece, index) => (
+            <span key={`${piece}-${index}`} title={pieceNames[piece]}>
+              {pieceMap[color === 'w' ? piece.toUpperCase() : piece]}
+            </span>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PromotionDialog({
+  turn,
+  onSelect,
+  onCancel,
+}: {
+  turn: Color;
+  onSelect: (piece: Exclude<PieceSymbol, 'p' | 'k'>) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="promotion-backdrop" role="presentation" onClick={onCancel}>
+      <div
+        className="promotion-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="选择升变棋子"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h2>选择升变</h2>
+        <div className="promotion-options">
+          {promotionPieces.map((piece) => (
+            <button type="button" key={piece} onClick={() => onSelect(piece)}>
+              <span>{pieceMap[turn === 'w' ? piece.toUpperCase() : piece]}</span>
+              {pieceNames[piece]}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="promotion-cancel" onClick={onCancel}>
+          取消
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StockfishPanel({
+  status,
+  analysis,
+  isEnabled,
+  mode,
+  logs,
+  nextMove,
+  isVariationMode,
+  fen,
+  isBoardFlipped,
+  perspective,
+  onPerspectiveChange,
+  onAnalyze,
+  onStop,
+}: {
+  status: EngineStatus;
+  analysis: StockfishAnalysis | null;
+  isEnabled: boolean;
+  mode: EngineMode;
+  logs: string[];
+  nextMove?: Move;
+  isVariationMode: boolean;
+  fen: string;
+  isBoardFlipped: boolean;
+  perspective: EvaluationPerspective;
+  onPerspectiveChange: (perspective: EvaluationPerspective) => void;
+  onAnalyze: () => void;
+  onStop: () => void;
+}) {
+  const isAnalyzing = status === 'analyzing';
+  const statusText: Record<EngineStatus, string> = {
+    idle: '未启动',
+    loading: '加载中',
+    ready: '就绪',
+    analyzing: '分析中',
+    error: '错误',
+  };
+  const explanation = getTrainingExplanation({
+    analysis,
+    nextMove,
+    isVariationMode,
+    perspective,
+    fen,
+    isBoardFlipped,
+  });
+
+  return (
+    <section className="engine-panel" aria-label="Stockfish 分析">
+      <div className="engine-header">
+        <div>
+          <span>Stockfish</span>
+          <p>
+            {isEnabled ? `持续分析 · ${statusText[status]}` : statusText[status]} ·{' '}
+            {mode === 'wasm' ? 'WASM' : 'ASM 兼容模式'}
+          </p>
+        </div>
+        <div className="engine-actions">
+          <button type="button" onClick={onAnalyze} disabled={status === 'loading'}>
+            {isEnabled ? '重新分析' : '开启分析'}
+          </button>
+          <button type="button" onClick={onStop} disabled={!isEnabled && !isAnalyzing}>
+            关闭
+          </button>
+        </div>
+      </div>
+
+      <div className="engine-perspective" aria-label="评分视角">
+        <button
+          type="button"
+          className={perspective === 'white' ? 'active' : ''}
+          onClick={() => onPerspectiveChange('white')}
+        >
+          白方
+        </button>
+        <button
+          type="button"
+          className={perspective === 'sideToMove' ? 'active' : ''}
+          onClick={() => onPerspectiveChange('sideToMove')}
+        >
+          执棋方
+        </button>
+        <button
+          type="button"
+          className={perspective === 'board' ? 'active' : ''}
+          onClick={() => onPerspectiveChange('board')}
+        >
+          棋盘
+        </button>
+      </div>
+
+      <div className="engine-grid">
+        <div>
+          <span>评分</span>
+          <strong>{formatScore(analysis?.score ?? null, perspective, fen, isBoardFlipped)}</strong>
+        </div>
+        <div>
+          <span>深度</span>
+          <strong>{analysis?.depth ? `${analysis.depth}` : '-'}</strong>
+        </div>
+        <div>
+          <span>最佳手</span>
+          <strong>{analysis?.bestMoveSan || analysis?.bestMove || '-'}</strong>
+        </div>
+      </div>
+
+      <div className="engine-pv">
+        <span>主线</span>
+        <p>{analysis?.pv.length ? analysis.pv.join(' ') : '暂无主线'}</p>
+      </div>
+
+      <div className="engine-explanation">
+        <span>训练解释</span>
+        <p>{explanation}</p>
+      </div>
+
+      <details className="engine-log">
+        <summary>引擎诊断日志</summary>
+        {logs.length > 0 ? (
+          <ul>
+            {logs.map((log, index) => (
+              <li key={`${log}-${index}`}>{log}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>暂无日志</p>
+        )}
+      </details>
+    </section>
+  );
+}
+
+function SavedVariationsPanel({
+  variations,
+  onDelete,
+}: {
+  variations: SavedVariation[];
+  onDelete: (id: string) => void;
+}) {
+  if (variations.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="saved-variations" aria-label="已保存变化">
+      <div className="saved-variations-header">
+        <span>已保存变化</span>
+        <strong>{variations.length}</strong>
+      </div>
+      <div className="saved-variation-list">
+        {variations.map((variation) => (
+          <div className="saved-variation-item" key={variation.id}>
+            <p>
+              {variation.baseIndex === 0 ? '开局' : `第 ${variation.baseIndex} 手`} 后：{' '}
+              {variation.labels.join(' ')}
+            </p>
+            <button type="button" onClick={() => onDelete(variation.id)}>
+              删除
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function OpeningPanel({ opening, playedPly }: { opening: OpeningMatch; playedPly: number }) {
+  const statusText: Record<OpeningMatch['status'], string> = {
+    start: '起始局面',
+    book: '仍在开局库',
+    recognized: '已识别',
+    deviation: '已脱离内置开局线',
+    unknown: '未识别',
+  };
+
+  return (
+    <section className="opening-panel" aria-label="开局识别">
+      <div className="opening-header">
+        <span>开局识别</span>
+        <strong>{opening.eco}</strong>
+      </div>
+      <h2>{opening.name}</h2>
+      <p>{statusText[opening.status]} · 已走 {playedPly} ply</p>
+      {opening.nextBookMove && (
+        <p>
+          内置库下一手：<strong>{opening.nextBookMove}</strong>
+        </p>
+      )}
+      {opening.status === 'deviation' && (
+        <p>
+          分歧点：实战走了 <strong>{opening.deviationMove}</strong>，库线是{' '}
+          <strong>{opening.nextBookMove ?? '-'}</strong>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function TrainingNotes({
+  pgnComment,
+  note,
+  onNoteChange,
+}: {
+  pgnComment?: string;
+  note: string;
+  onNoteChange: (value: string) => void;
+}) {
+  return (
+    <section className="notes-panel" aria-label="复盘笔记">
+      {pgnComment && (
+        <div className="pgn-comment">
+          <span>PGN 注释</span>
+          <p>{pgnComment}</p>
+        </div>
+      )}
+      <label className="note-input">
+        <span>我的笔记</span>
+        <textarea
+          value={note}
+          onChange={(event) => onNoteChange(event.target.value)}
+          placeholder="记录这一步的判断、漏算、计划或训练结论。"
+        />
+      </label>
+    </section>
+  );
+}
+
+function MoveList({
+  source,
+  moves,
+  positions,
+  activeIndex,
+  variationPositions,
+  activeVariationIndex,
+  notesByPosition,
+  noteContext,
+  onSelect,
+  onVariationSelect,
+}: {
+  source: ReplayMode;
+  moves: Move[];
+  positions: ReplayPosition[];
+  activeIndex: number;
+  variationPositions: VariationPosition[];
+  activeVariationIndex: number;
+  notesByPosition: Record<string, string>;
+  noteContext: {
+    mode: ReplayMode;
+    text: string;
+  };
+  onSelect: (index: number) => void;
+  onVariationSelect: (index: number) => void;
+}) {
+  if (source === 'fen') {
+    return (
+      <div className="move-list">
+        <h2>局面序列</h2>
+        <div className="moves-grid single">
+          {positions.map((position, index) => (
+            <button
+              type="button"
+              key={`${position.fen}-${index}`}
+              className={activeIndex === index && activeVariationIndex < 0 ? 'active' : ''}
+              onClick={() => onSelect(index)}
+            >
+              <MoveButtonContent
+                label={position.label}
+                hasComment={Boolean(position.comment)}
+                hasNote={Boolean(
+                  notesByPosition[
+                    getPositionNoteKey(noteContext.mode, noteContext.text, index, position.fen)
+                  ],
+                )}
+              />
+            </button>
+          ))}
+        </div>
+        <VariationMoveList
+          positions={variationPositions}
+          activeIndex={activeVariationIndex}
+          onSelect={onVariationSelect}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="move-list">
+      <h2>走法</h2>
+      <button
+        type="button"
+        className={activeIndex === 0 && activeVariationIndex < 0 ? 'active' : ''}
+        onClick={() => onSelect(0)}
+      >
+        <MoveButtonContent
+          label="开局"
+          hasComment={Boolean(positions[0]?.comment)}
+          hasNote={Boolean(
+            positions[0] &&
+              notesByPosition[getPositionNoteKey(noteContext.mode, noteContext.text, 0, positions[0].fen)]
+          )}
+        />
+      </button>
+      <div className="moves-grid">
+        {moves.map((move, index) => (
+          <button
+            type="button"
+            key={`${move.lan}-${index}`}
+            className={activeIndex === index + 1 && activeVariationIndex < 0 ? 'active' : ''}
+            onClick={() => onSelect(index + 1)}
+          >
+            <MoveButtonContent
+              label={formatMoveLabel(move, index)}
+              hasComment={Boolean(positions[index + 1]?.comment)}
+              hasNote={Boolean(
+                positions[index + 1] &&
+                  notesByPosition[
+                    getPositionNoteKey(
+                      noteContext.mode,
+                      noteContext.text,
+                      index + 1,
+                      positions[index + 1].fen,
+                    )
+                  ],
+              )}
+            />
+          </button>
+        ))}
+      </div>
+      <VariationMoveList
+        positions={variationPositions}
+        activeIndex={activeVariationIndex}
+        onSelect={onVariationSelect}
+      />
+    </div>
+  );
+}
+
+function MoveButtonContent({
+  label,
+  hasComment,
+  hasNote,
+}: {
+  label: string;
+  hasComment: boolean;
+  hasNote: boolean;
+}) {
+  return (
+    <span className="move-button-content">
+      <span>{label}</span>
+      {(hasComment || hasNote) && (
+        <span className="move-badges" aria-hidden="true">
+          {hasComment && <span>C</span>}
+          {hasNote && <span>N</span>}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function VariationMoveList({
+  positions,
+  activeIndex,
+  onSelect,
+}: {
+  positions: VariationPosition[];
+  activeIndex: number;
+  onSelect: (index: number) => void;
+}) {
+  if (positions.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="variation-moves">
+      <h2>试走棋谱</h2>
+      <div className="moves-grid">
+        {positions.map((position, index) => (
+          <button
+            type="button"
+            key={`${position.fen}-${index}`}
+            className={activeIndex === index ? 'active variation-active' : 'variation-entry'}
+            onClick={() => onSelect(index)}
+          >
+            {position.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export { App };
