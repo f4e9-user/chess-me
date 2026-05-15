@@ -95,6 +95,8 @@ type MistakeCard = {
   pgnText: string;
   attempts: number;
   solvedCount: number;
+  reviewStage: number;
+  dueAt: string;
   tags: string[];
   createdAt: string;
   updatedAt: string;
@@ -680,6 +682,8 @@ function buildMistakeCardFromGuess({
     pgnText,
     attempts: 1,
     solvedCount: 0,
+    reviewStage: 0,
+    dueAt: now,
     tags: ['猜下一手'],
     createdAt: now,
     updatedAt: now,
@@ -699,11 +703,83 @@ function upsertMistakeCard(cards: MistakeCard[], card: MistakeCard): MistakeCard
           ...card,
           attempts: item.attempts + 1,
           solvedCount: item.solvedCount,
+          reviewStage: 0,
+          dueAt: card.dueAt,
           createdAt: item.createdAt,
           updatedAt: card.updatedAt,
         }
       : item,
   );
+}
+
+function getSpacedReviewIntervalDays(reviewStage: number) {
+  const intervals = [1, 3, 7, 14];
+  return intervals[Math.min(Math.max(reviewStage, 0), intervals.length - 1)];
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function normalizeMistakeCard(card: MistakeCard): MistakeCard {
+  const now = card.updatedAt || card.createdAt || new Date().toISOString();
+  return {
+    ...card,
+    reviewStage: card.reviewStage ?? 0,
+    dueAt: card.dueAt ?? now,
+  };
+}
+
+function updateMistakeCardReview(card: MistakeCard, solved: boolean, reviewedAt = new Date()): MistakeCard {
+  const normalized = normalizeMistakeCard(card);
+  const nextStage = solved ? Math.min(normalized.reviewStage + 1, 3) : 0;
+  const dueAt = solved ? addDays(reviewedAt, getSpacedReviewIntervalDays(nextStage)).toISOString() : reviewedAt.toISOString();
+
+  return {
+    ...normalized,
+    attempts: normalized.attempts + 1,
+    solvedCount: solved ? normalized.solvedCount + 1 : normalized.solvedCount,
+    reviewStage: nextStage,
+    dueAt,
+    updatedAt: reviewedAt.toISOString(),
+  };
+}
+
+function buildDailyTrainingPlan(cards: MistakeCard[], now = new Date(), limit = 10) {
+  const normalizedCards = cards.map(normalizeMistakeCard);
+  const dueCards = normalizedCards
+    .filter((card) => new Date(card.dueAt).getTime() <= now.getTime())
+    .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+  const dueIds = new Set(dueCards.map((card) => card.id));
+  const weakTagCards = normalizedCards
+    .filter((card) => !dueIds.has(card.id))
+    .sort((a, b) => {
+      const tagPriority = Number(b.tags.length > 0) - Number(a.tags.length > 0);
+      if (tagPriority !== 0) {
+        return tagPriority;
+      }
+      return a.solvedCount - b.solvedCount || b.attempts - a.attempts;
+    });
+
+  return [...dueCards, ...weakTagCards].slice(0, limit);
+}
+
+function buildTrainingStatsByTag(cards: MistakeCard[]) {
+  const stats = new Map<string, { tag: string; attempts: number; solvedCount: number; accuracy: number }>();
+
+  cards.map(normalizeMistakeCard).forEach((card) => {
+    card.tags.forEach((tag) => {
+      const current = stats.get(tag) ?? { tag, attempts: 0, solvedCount: 0, accuracy: 0 };
+      current.attempts += card.attempts;
+      current.solvedCount += card.solvedCount;
+      current.accuracy = current.attempts ? Math.round((current.solvedCount / current.attempts) * 100) : 0;
+      stats.set(tag, current);
+    });
+  });
+
+  return [...stats.values()].sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts);
 }
 
 function scoreToWhiteCentipawns(score: StockfishAnalysis['score']) {
@@ -1098,6 +1174,12 @@ function App() {
       variationIndex >= 0 ? variationPositions.slice(0, variationIndex + 1).map((position) => position.move.san) : [];
     return [...originalMoves, ...activeVariationMoves];
   }, [result.moves, safeIndex, variationIndex, variationPositions]);
+  const trainingPlan = useMemo(() => buildDailyTrainingPlan(mistakeCards, new Date(), 10), [mistakeCards]);
+  const dueTrainingCount = useMemo(
+    () => mistakeCards.filter((card) => new Date(normalizeMistakeCard(card).dueAt).getTime() <= Date.now()).length,
+    [mistakeCards],
+  );
+  const trainingStatsByTag = useMemo(() => buildTrainingStatsByTag(mistakeCards), [mistakeCards]);
   const openingMatch = useMemo(() => identifyOpening(playedMoves), [playedMoves]);
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
@@ -1451,6 +1533,8 @@ function App() {
       pgnText: mode === 'pgn' ? text : '',
       attempts: 1,
       solvedCount: 0,
+      reviewStage: 0,
+      dueAt: now,
       tags: ['手动加入'],
       createdAt: now,
       updatedAt: now,
@@ -1469,14 +1553,13 @@ function App() {
     setPendingPromotion(null);
     setGuessResult(null);
     setIsGuessMode(false);
-    setMistakeCards((cards) =>
-      cards.map((item) =>
-        item.id === card.id
-          ? { ...item, solvedCount: item.solvedCount + 1, updatedAt: new Date().toISOString() }
-          : item,
-      ),
-    );
-    showToast({ type: 'success', text: '已载入错题局面，可在棋盘上重新训练。' });
+    setMistakeCards((cards) => cards.map((item) => (item.id === card.id ? updateMistakeCardReview(item, true) : item)));
+    showToast({ type: 'success', text: '已载入错题局面，本次复习记为完成并安排下次间隔复习。' });
+  };
+
+  const markMistakeCardUnsolved = (card: MistakeCard) => {
+    setMistakeCards((cards) => cards.map((item) => (item.id === card.id ? updateMistakeCardReview(item, false) : item)));
+    showToast({ type: 'error', text: '已记录为仍需复习，错题会保留在今日训练计划。' });
   };
 
   const deleteMistakeCard = (id: string) => {
@@ -1871,8 +1954,12 @@ function App() {
 
           <MistakeBookPanel
             cards={mistakeCards}
+            trainingPlan={trainingPlan}
+            dueCount={dueTrainingCount}
+            statsByTag={trainingStatsByTag}
             onAddCurrent={addCurrentPositionToMistakeBook}
             onPractice={practiceMistakeCard}
+            onMarkUnsolved={markMistakeCardUnsolved}
             onDelete={deleteMistakeCard}
           />
 
@@ -2412,52 +2499,96 @@ function GuessTrainingPanel({
 
 function MistakeBookPanel({
   cards,
+  trainingPlan,
+  dueCount,
+  statsByTag,
   onAddCurrent,
   onPractice,
+  onMarkUnsolved,
   onDelete,
 }: {
   cards: MistakeCard[];
+  trainingPlan: MistakeCard[];
+  dueCount: number;
+  statsByTag: Array<{ tag: string; attempts: number; solvedCount: number; accuracy: number }>;
   onAddCurrent: () => void;
   onPractice: (card: MistakeCard) => void;
+  onMarkUnsolved: (card: MistakeCard) => void;
   onDelete: (id: string) => void;
 }) {
+  const displayCards = trainingPlan.length > 0 ? trainingPlan : cards.map(normalizeMistakeCard);
+
   return (
     <section className="mistake-book-panel" aria-label="错题本">
       <div className="mistake-book-header">
         <div>
-          <span>错题本</span>
-          <p>猜错会自动保存，也可以手动加入当前局面。</p>
+          <span>训练闭环 / 错题本</span>
+          <p>猜错自动入库，按 1/3/7/14 天间隔复习，并优先生成每日 10 题训练计划。</p>
         </div>
         <button type="button" onClick={onAddCurrent}>
           加入当前局面
         </button>
       </div>
 
-      {cards.length === 0 ? (
+      <div className="training-loop-summary">
+        <div>
+          <span>今日待复习</span>
+          <strong>{dueCount}</strong>
+        </div>
+        <div>
+          <span>每日计划</span>
+          <strong>{trainingPlan.length}</strong>
+        </div>
+        <div>
+          <span>错题总数</span>
+          <strong>{cards.length}</strong>
+        </div>
+      </div>
+
+      {statsByTag.length > 0 && (
+        <div className="tag-stats">
+          {statsByTag.map((stat) => (
+            <span key={stat.tag}>
+              {stat.tag}：{stat.accuracy}%（{stat.solvedCount}/{stat.attempts}）
+            </span>
+          ))}
+        </div>
+      )}
+
+      {displayCards.length === 0 ? (
         <p className="mistake-empty">暂无错题。开启猜下一手训练后，猜错的局面会自动进入这里。</p>
       ) : (
         <div className="mistake-card-list">
-          {cards.map((card) => (
-            <article className="mistake-card" key={card.id}>
-              <div>
-                <strong>{card.positionLabel}</strong>
-                <p>
-                  你的选择：{card.guessedSan} · 正解：{card.actualSan} · 引擎：{card.stockfishBestSan || '-'}
-                </p>
-                <small>
-                  错误 {card.attempts} 次 · 重练 {card.solvedCount} 次 · {card.tags.join('、')}
-                </small>
-              </div>
-              <div className="mistake-card-actions">
-                <button type="button" onClick={() => onPractice(card)}>
-                  重新训练
-                </button>
-                <button type="button" onClick={() => onDelete(card.id)}>
-                  删除
-                </button>
-              </div>
-            </article>
-          ))}
+          {displayCards.map((card) => {
+            const normalized = normalizeMistakeCard(card);
+            const interval = getSpacedReviewIntervalDays(normalized.reviewStage);
+            const isDue = new Date(normalized.dueAt).getTime() <= Date.now();
+            return (
+              <article className={`mistake-card ${isDue ? 'due' : ''}`} key={normalized.id}>
+                <div>
+                  <strong>{normalized.positionLabel}</strong>
+                  <p>
+                    你的选择：{normalized.guessedSan} · 正解：{normalized.actualSan} · 引擎：{normalized.stockfishBestSan || '-'}
+                  </p>
+                  <small>
+                    尝试 {normalized.attempts} 次 · 完成 {normalized.solvedCount} 次 · 阶段 {normalized.reviewStage} · 下次间隔 {interval} 天 · 到期{' '}
+                    {new Date(normalized.dueAt).toLocaleDateString()} · {normalized.tags.join('、')}
+                  </small>
+                </div>
+                <div className="mistake-card-actions">
+                  <button type="button" onClick={() => onPractice(normalized)}>
+                    完成复习
+                  </button>
+                  <button type="button" onClick={() => onMarkUnsolved(normalized)}>
+                    仍需复习
+                  </button>
+                  <button type="button" onClick={() => onDelete(normalized.id)}>
+                    删除
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       )}
     </section>
@@ -2790,10 +2921,13 @@ function VariationMoveList({
 export {
   App,
   analyzeGuessMove,
+  buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
+  getSpacedReviewIntervalDays,
   normalizeSan,
   scoreToWhiteCentipawns,
+  updateMistakeCardReview,
   upsertMistakeCard,
 };

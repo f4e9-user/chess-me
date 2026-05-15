@@ -423,7 +423,9 @@ h2 {
 .guess-stats,
 .mistake-card-list,
 .global-analysis-list,
-.saved-variation-list {
+.saved-variation-list,
+.training-loop-summary,
+.tag-stats {
   display: grid;
   gap: 8px;
 }
@@ -432,7 +434,26 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.training-loop-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.tag-stats {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.tag-stats span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff8e8;
+  padding: 6px 10px;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
 .guess-stats div,
+.training-loop-summary div,
 .guess-result,
 .swing-summary {
   border: 1px solid var(--border);
@@ -442,6 +463,7 @@ h2 {
 }
 
 .guess-stats span,
+.training-loop-summary span,
 .swing-summary span {
   display: block;
   color: var(--ink-muted);
@@ -449,7 +471,8 @@ h2 {
   font-weight: 800;
 }
 
-.guess-stats strong {
+.guess-stats strong,
+.training-loop-summary strong {
   display: block;
   margin-top: 4px;
   color: var(--accent-strong);
@@ -510,6 +533,11 @@ h2 {
 
 .mistake-card strong {
   color: var(--ink);
+}
+
+.mistake-card.due {
+  border-color: #d6911d;
+  box-shadow: inset 4px 0 0 #d6911d;
 }
 
 .mistake-card-actions {

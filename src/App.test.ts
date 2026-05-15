@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   analyzeGuessMove,
+  buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
+  getSpacedReviewIntervalDays,
   normalizeSan,
   scoreToWhiteCentipawns,
+  updateMistakeCardReview,
   upsertMistakeCard,
 } from './App';
 
@@ -68,6 +71,8 @@ describe('mistake book helpers', () => {
       stockfishBestSan: 'Bb5',
       attempts: 1,
       solvedCount: 0,
+      reviewStage: 0,
+      dueAt: expect.any(String),
       tags: ['猜下一手'],
     });
     expect(card?.id).toContain('start-fen');
@@ -97,6 +102,65 @@ describe('mistake book helpers', () => {
     const updated = upsertMistakeCard(inserted, { ...card!, guessedSan: 'Be7' });
 
     expect(updated).toHaveLength(1);
-    expect(updated[0]).toMatchObject({ attempts: 2, guessedSan: 'Be7' });
+    expect(updated[0]).toMatchObject({ attempts: 2, guessedSan: 'Be7', reviewStage: 0 });
+  });
+
+  it('advances spaced review stages after successful reviews and schedules the next due date', () => {
+    const card = buildMistakeCardFromGuess({
+      baseFen: 'review-fen',
+      positionLabel: '6. O-O',
+      result: analyzeGuessMove({ guessedSan: 'h3', actualSan: 'O-O', stockfishBestSan: 'O-O' }),
+      pgnText: 'sample pgn',
+    });
+
+    const reviewed = updateMistakeCardReview(card!, true, new Date('2026-05-15T00:00:00.000Z'));
+
+    expect(getSpacedReviewIntervalDays(reviewed.reviewStage)).toBe(3);
+    expect(reviewed).toMatchObject({ solvedCount: 1, attempts: 2, reviewStage: 1 });
+    expect(reviewed.dueAt).toBe('2026-05-18T00:00:00.000Z');
+  });
+
+  it('resets review stage after failed reviews and keeps the card due immediately', () => {
+    const card = {
+      ...buildMistakeCardFromGuess({
+        baseFen: 'failed-fen',
+        positionLabel: '9... Re8',
+        result: analyzeGuessMove({ guessedSan: 'h6', actualSan: 'Re8', stockfishBestSan: 'Re8' }),
+        pgnText: 'sample pgn',
+      })!,
+      reviewStage: 2,
+    };
+
+    const reviewed = updateMistakeCardReview(card, false, new Date('2026-05-15T00:00:00.000Z'));
+
+    expect(reviewed).toMatchObject({ solvedCount: 0, attempts: 2, reviewStage: 0 });
+    expect(reviewed.dueAt).toBe('2026-05-15T00:00:00.000Z');
+  });
+
+  it('builds a daily training plan from due cards first, then weak-tag review cards', () => {
+    const dueCard = {
+      ...buildMistakeCardFromGuess({
+        baseFen: 'due-fen',
+        positionLabel: '2. Nf3',
+        result: analyzeGuessMove({ guessedSan: 'Bc4', actualSan: 'Nf3', stockfishBestSan: 'Nf3' }),
+        pgnText: 'pgn',
+      })!,
+      tags: ['战术'],
+      dueAt: '2026-05-14T00:00:00.000Z',
+    };
+    const futureWeakCard = {
+      ...buildMistakeCardFromGuess({
+        baseFen: 'weak-fen',
+        positionLabel: '8. Re1',
+        result: analyzeGuessMove({ guessedSan: 'a3', actualSan: 'Re1', stockfishBestSan: 'Re1' }),
+        pgnText: 'pgn',
+      })!,
+      tags: ['战术'],
+      dueAt: '2026-06-01T00:00:00.000Z',
+    };
+
+    const plan = buildDailyTrainingPlan([futureWeakCard, dueCard], new Date('2026-05-15T00:00:00.000Z'), 10);
+
+    expect(plan.map((card) => card.id)).toEqual([dueCard.id, futureWeakCard.id]);
   });
 });
