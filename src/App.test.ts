@@ -5,6 +5,7 @@ import {
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
+  buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
@@ -151,6 +152,41 @@ describe('opening improvement helpers', () => {
   });
 });
 
+describe('endgame training helpers', () => {
+  it('detects endgame phase, classifies type, and generates training cards from late mistakes', () => {
+    const plan = buildEndgameTrainingPlan({
+      positions: [
+        { fen: '8/8/8/8/8/8/4K3/4k3 w - - 0 1', label: '1. Kd2' },
+        { fen: '8/8/8/8/8/8/4K3/R3k3 b - - 0 1', label: '1... Ke1' },
+        { fen: '8/8/8/8/8/8/4K3/R3k3 w - - 0 2', label: '2. Ra8' },
+      ],
+      analyses: [
+        {
+          moveIndex: 1,
+          label: '1... Ke1',
+          san: 'Ke1',
+          quality: '失误',
+          centipawnLoss: 180,
+          beforeScore: 0,
+          afterScore: 260,
+          isSwingPoint: true,
+          bestMoveSan: 'Kd1',
+        },
+      ],
+    });
+
+    expect(plan.phase).toBe('endgame');
+    expect(plan.type).toBe('车残局');
+    expect(plan.cards[0]).toMatchObject({
+      label: '1... Ke1',
+      missedChance: '错过守和机会',
+      recommendedMove: 'Kd1',
+      tags: ['残局', '车残局'],
+    });
+    expect(plan.themes).toContain('王的积极性');
+    expect(plan.summary).toContain('识别到车残局');
+  });
+});
 describe('middlegame plan training helpers', () => {
   it('builds a middlegame plan from swing points and recurring move-quality themes', () => {
     const plan = buildMiddlegamePlanTraining([
