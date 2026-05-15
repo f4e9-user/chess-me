@@ -5,6 +5,7 @@ import {
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
+  buildMiddlegamePlanTraining,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   getSpacedReviewIntervalDays,
@@ -113,6 +114,57 @@ describe('opening improvement helpers', () => {
       tags: ['开局'],
     });
     expect(plan.summary).toContain('开局分歧 1 个');
+  });
+});
+
+describe('middlegame plan training helpers', () => {
+  it('builds a middlegame plan from swing points and recurring move-quality themes', () => {
+    const plan = buildMiddlegamePlanTraining([
+      {
+        moveIndex: 10,
+        label: '6. h3',
+        san: 'h3',
+        quality: '疑问手',
+        centipawnLoss: 90,
+        beforeScore: 35,
+        afterScore: -55,
+        isSwingPoint: false,
+        bestMoveSan: 'Re1',
+      },
+      {
+        moveIndex: 15,
+        label: '8... Nxe4',
+        san: 'Nxe4',
+        quality: '失误',
+        centipawnLoss: 220,
+        beforeScore: -20,
+        afterScore: 210,
+        isSwingPoint: true,
+        bestMoveSan: 'c6',
+      },
+      {
+        moveIndex: 19,
+        label: '10... g5',
+        san: 'g5',
+        quality: '败着',
+        centipawnLoss: 360,
+        beforeScore: 40,
+        afterScore: 430,
+        isSwingPoint: true,
+        bestMoveSan: 'Re8',
+      },
+    ]);
+
+    expect(plan.focusCards).toHaveLength(2);
+    expect(plan.focusCards[0]).toMatchObject({
+      label: '10... g5',
+      topic: '候选着法与风险控制',
+      priority: 100,
+      recommendedPlan: expect.stringContaining('Re8'),
+      tags: ['中局', '败着'],
+    });
+    expect(plan.themeStats.map((theme) => theme.theme)).toContain('王翼兵形/王安全');
+    expect(plan.summary).toContain('2 个关键中局计划点');
   });
 });
 

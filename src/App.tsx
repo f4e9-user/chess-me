@@ -200,6 +200,30 @@ type OpeningImprovementPlan = {
   summary: string;
 };
 
+type MiddlegamePlanCard = {
+  id: string;
+  moveIndex: number;
+  label: string;
+  san: string;
+  topic: string;
+  priority: number;
+  recommendedPlan: string;
+  reason: string;
+  tags: string[];
+};
+
+type MiddlegameThemeStat = {
+  theme: string;
+  count: number;
+  totalLoss: number;
+};
+
+type MiddlegamePlanTraining = {
+  focusCards: MiddlegamePlanCard[];
+  themeStats: MiddlegameThemeStat[];
+  summary: string;
+};
+
 const initialPgn = `[Event "Training Review"]
 [Site "Chess Me"]
 [Date "2026.05.14"]
@@ -761,6 +785,61 @@ function buildOpeningImprovementPlan(games: string[][]): OpeningImprovementPlan 
     deviationCards,
     summary,
   };
+}
+
+function classifyMiddlegameTheme(analysis: GlobalMoveAnalysis) {
+  const san = analysis.san;
+  if (/^[a-h][34-6]?$/i.test(san) || /^[a-h]x/i.test(san)) {
+    return san.match(/^[fghe]/i) ? '王翼兵形/王安全' : '中心与兵形';
+  }
+  if (/x/.test(san)) {
+    return '换子与战术计算';
+  }
+  if (/^[NBRQK]/.test(san)) {
+    return '子力协调/最差子改善';
+  }
+  return '候选着法与风险控制';
+}
+
+function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): MiddlegamePlanTraining {
+  const middlegameAnalyses = analyses.filter((item) => item.moveIndex >= 8 && item.moveIndex <= 40);
+  const riskyMoves = middlegameAnalyses
+    .filter((item) => item.isSwingPoint || item.quality === '失误' || item.quality === '败着')
+    .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
+
+  const focusCards = riskyMoves.slice(0, 4).map((item) => {
+    const theme = classifyMiddlegameTheme(item);
+    const priority = item.quality === '败着' ? 100 : item.quality === '失误' ? 80 : 60;
+    return {
+      id: `middlegame-${item.moveIndex}-${normalizeSan(item.san)}`,
+      moveIndex: item.moveIndex,
+      label: item.label,
+      san: item.san,
+      topic: item.centipawnLoss >= 300 ? '候选着法与风险控制' : theme,
+      priority,
+      recommendedPlan: `复盘 ${item.label} 前的候选计划；优先比较实战 ${item.san} 与引擎首选 ${item.bestMoveSan || '暂未分析'} 的战略目标。`,
+      reason: `该手损失 ${item.centipawnLoss} cp${item.isSwingPoint ? '，并触发局势突变' : ''}。`,
+      tags: ['中局', item.quality],
+    } satisfies MiddlegamePlanCard;
+  });
+
+  const themeMap = new Map<string, MiddlegameThemeStat>();
+  middlegameAnalyses
+    .filter((item) => item.quality !== '好棋')
+    .forEach((item) => {
+      const theme = classifyMiddlegameTheme(item);
+      const current = themeMap.get(theme) ?? { theme, count: 0, totalLoss: 0 };
+      current.count += 1;
+      current.totalLoss += item.centipawnLoss;
+      themeMap.set(theme, current);
+    });
+
+  const themeStats = [...themeMap.values()].sort((a, b) => b.totalLoss - a.totalLoss || b.count - a.count);
+  const summary = focusCards.length
+    ? `发现 ${focusCards.length} 个关键中局计划点，优先训练：${focusCards[0].topic}。`
+    : '暂未发现明显中局计划训练点；建议先运行整盘分析。';
+
+  return { focusCards, themeStats, summary };
 }
 
 function normalizeSan(san: string) {
@@ -1474,6 +1553,7 @@ function App() {
     () => buildOpeningImprovementPlan(mode === 'pgn' ? [result.moves.map((move) => move.san)] : []),
     [mode, result.moves],
   );
+  const middlegamePlanTraining = useMemo(() => buildMiddlegamePlanTraining(globalAnalysis), [globalAnalysis]);
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
 
@@ -2345,6 +2425,8 @@ function App() {
 
           <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
 
+          <MiddlegamePlanPanel plan={middlegamePlanTraining} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
             isAnalyzing={isGlobalAnalyzing}
@@ -3071,6 +3153,56 @@ function GlobalAnalysisPanel({
   );
 }
 
+function MiddlegamePlanPanel({
+  plan,
+  onSelectMove,
+}: {
+  plan: MiddlegamePlanTraining;
+  onSelectMove: (moveIndex: number) => void;
+}) {
+  return (
+    <section className="middlegame-plan-panel" aria-label="中局计划训练">
+      <div className="middlegame-plan-header">
+        <span>中局计划训练</span>
+        <strong>{plan.focusCards.length}</strong>
+      </div>
+      <p>{plan.summary}</p>
+
+      {plan.themeStats.length > 0 && (
+        <div className="middlegame-theme-list">
+          {plan.themeStats.slice(0, 4).map((theme) => (
+            <span key={theme.theme}>
+              {theme.theme}：{theme.count} 次 · 损失 {theme.totalLoss} cp
+            </span>
+          ))}
+        </div>
+      )}
+
+      {plan.focusCards.length > 0 ? (
+        <div className="middlegame-card-list">
+          {plan.focusCards.map((card) => (
+            <button
+              type="button"
+              className="middlegame-plan-card"
+              key={card.id}
+              onClick={() => onSelectMove(card.moveIndex)}
+            >
+              <span>
+                {card.label} · {card.topic}
+              </span>
+              <strong>优先级 {card.priority}</strong>
+              <p>{card.recommendedPlan}</p>
+              <small>{card.reason}</small>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="middlegame-empty">运行“一键全局分析”后，会自动生成本局中局计划训练卡。</p>
+      )}
+    </section>
+  );
+}
+
 function SavedVariationsPanel({
   variations,
   onDelete,
@@ -3382,6 +3514,7 @@ export {
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
+  buildMiddlegamePlanTraining,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   getSpacedReviewIntervalDays,

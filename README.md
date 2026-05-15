@@ -249,10 +249,10 @@ public/stockfish/
 
 ### E. 中局计划训练
 
-- [ ] 在关键局面提示用户选择计划，而不是只猜一步。
-- [ ] 支持计划标签：进攻、防守、换子、改善最差子、突破、转残局。
-- [ ] 对比引擎主线解释该计划为什么成立或不成立。
-- [ ] 生成“本局中局主题”总结。
+- [x] 在关键局面提示用户选择计划，而不是只猜一步。
+- [x] 支持计划标签：进攻、防守、换子、改善最差子、突破、转残局。
+- [x] 对比引擎主线解释该计划为什么成立或不成立。
+- [x] 生成“本局中局主题”总结。
 
 ### F. 残局训练
 
@@ -316,6 +316,7 @@ public/stockfish/
 ```bash
 npm test
 npm run build
+npm test -- --run src/App.test.ts -t "middlegame plan training"
 npm test -- --run src/App.test.ts -t "opening improvement"
 npm test -- --run src/App.test.ts -t "candidate move training"
 npm test -- --run src/App.test.ts -t "advances spaced review|resets review stage|builds a daily training plan"
