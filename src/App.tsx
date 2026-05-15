@@ -69,6 +69,96 @@ type StockfishAnalysis = {
 
 type EvaluationPerspective = 'white' | 'sideToMove' | 'board';
 type EngineMode = 'wasm' | 'asm';
+type MoveQualityLabel = '好棋' | '疑问手' | '失误' | '败着';
+
+type GuessMoveResult = {
+  guessedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+  isCorrect: boolean;
+  matchesStockfish: boolean;
+  summary: string;
+};
+
+type GuessStats = {
+  correct: number;
+  wrong: number;
+};
+
+type CandidateMoveEntry = {
+  moveSan: string;
+  reason: string;
+};
+
+type CandidateMoveTrainingResult = {
+  entries: CandidateMoveEntry[];
+  candidateCount: number;
+  isValid: boolean;
+  validationMessage: string;
+  selectedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+  hasActualInCandidates: boolean;
+  hasBestInCandidates: boolean;
+  selectedIsActual: boolean;
+  selectedIsBest: boolean;
+  answerInCandidatesButNotSelected: boolean;
+  sortingScore: number;
+  summary: string;
+};
+
+type CandidateTrainingStats = {
+  sessions: number;
+  validSessions: number;
+  answerCovered: number;
+  bestCovered: number;
+  answerInCandidatesButNotSelected: number;
+  sortingScoreTotal: number;
+};
+
+type CandidateTrainingSession = {
+  id: string;
+  positionLabel: string;
+  result: CandidateMoveTrainingResult;
+  createdAt: string;
+};
+
+type MistakeCard = {
+  id: string;
+  fen: string;
+  positionLabel: string;
+  guessedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+  pgnText: string;
+  attempts: number;
+  solvedCount: number;
+  reviewStage: number;
+  dueAt: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+type GlobalMoveAnalysis = {
+  moveIndex: number;
+  label: string;
+  san: string;
+  quality: MoveQualityLabel;
+  centipawnLoss: number;
+  beforeScore: number | null;
+  afterScore: number | null;
+  isSwingPoint: boolean;
+  bestMoveSan: string;
+};
+
+type EngineAnalysisRequest = {
+  fen: string;
+  resolve: (analysis: StockfishAnalysis) => void;
+  reject: (error: Error) => void;
+  latest: Partial<StockfishAnalysis>;
+  timeoutId: number;
+};
 
 type OpeningEntry = {
   eco: string;
@@ -83,6 +173,55 @@ type OpeningMatch = {
   matchedPly: number;
   nextBookMove?: string;
   deviationMove?: string;
+};
+
+type OpeningImprovementCard = {
+  id: string;
+  openingName: string;
+  eco: string;
+  deviationPly: number;
+  playedMove: string;
+  bookMove: string;
+  reviewPrompt: string;
+  tags: string[];
+};
+
+type OpeningStat = {
+  eco: string;
+  name: string;
+  games: number;
+  deviations: number;
+  deviationRate: number;
+};
+
+type OpeningImprovementPlan = {
+  commonOpenings: OpeningStat[];
+  deviationCards: OpeningImprovementCard[];
+  summary: string;
+};
+
+type MiddlegamePlanCard = {
+  id: string;
+  moveIndex: number;
+  label: string;
+  san: string;
+  topic: string;
+  priority: number;
+  recommendedPlan: string;
+  reason: string;
+  tags: string[];
+};
+
+type MiddlegameThemeStat = {
+  theme: string;
+  count: number;
+  totalLoss: number;
+};
+
+type MiddlegamePlanTraining = {
+  focusCards: MiddlegamePlanCard[];
+  themeStats: MiddlegameThemeStat[];
+  summary: string;
 };
 
 const initialPgn = `[Event "Training Review"]
@@ -100,6 +239,12 @@ const notesStorageKey = 'chess-me:position-notes:v1';
 const stockfishWorkerUrl = '/stockfish/stockfish-18-lite-single.js';
 const stockfishWasmUrl = '/stockfish/stockfish-18-lite-single.wasm';
 const stockfishAsmWorkerUrl = '/stockfish/stockfish-18-asm.js';
+const globalAnalysisDepth = 10;
+const swingPointThreshold = 150;
+const guessStatsStorageKey = 'chess-me:guess-stats:v1';
+const mistakeBookStorageKey = 'chess-me:mistake-book:v1';
+const candidateTrainingStatsStorageKey = 'chess-me:candidate-training-stats:v1';
+const candidateTrainingSessionsStorageKey = 'chess-me:candidate-training-sessions:v1';
 
 const openingBook: OpeningEntry[] = [
   { eco: 'A00', name: '初始局面', moves: [] },
@@ -524,6 +669,27 @@ function identifyOpening(playedMoves: string[]): OpeningMatch {
 
   if (recognizedCandidates[0]) {
     const entry = recognizedCandidates[0];
+    if (playedMoves.length > entry.moves.length) {
+      const continuation = openingBook
+        .filter(
+          (candidate) =>
+            candidate.moves.length > entry.moves.length &&
+            entry.moves.every((move, index) => candidate.moves[index] === move),
+        )
+        .sort((a, b) => a.moves.length - b.moves.length || b.eco.localeCompare(a.eco))[0];
+
+      if (continuation?.moves[entry.moves.length]) {
+        return {
+          eco: entry.eco,
+          name: entry.name,
+          status: 'deviation',
+          matchedPly: entry.moves.length,
+          deviationMove: playedMoves[entry.moves.length],
+          nextBookMove: continuation.moves[entry.moves.length],
+        };
+      }
+    }
+
     return {
       eco: entry.eco,
       name: entry.name,
@@ -567,8 +733,552 @@ function countCommonPrefix(expected: string[], actual: string[]) {
   return count;
 }
 
+function buildOpeningImprovementPlan(games: string[][]): OpeningImprovementPlan {
+  const statMap = new Map<string, OpeningStat>();
+  const deviationCards: OpeningImprovementCard[] = [];
+
+  games.forEach((moves, gameIndex) => {
+    const opening = identifyOpening(moves);
+    if (opening.status === 'unknown' || opening.status === 'start') {
+      return;
+    }
+
+    const key = `${opening.eco}:${opening.name}`;
+    const existing = statMap.get(key) ?? {
+      eco: opening.eco,
+      name: opening.name,
+      games: 0,
+      deviations: 0,
+      deviationRate: 0,
+    };
+    existing.games += 1;
+
+    if (opening.status === 'deviation' && opening.deviationMove && opening.nextBookMove) {
+      existing.deviations += 1;
+      const deviationPly = opening.matchedPly + 1;
+      deviationCards.push({
+        id: `${key}:game-${gameIndex}:ply-${deviationPly}`,
+        openingName: opening.name,
+        eco: opening.eco,
+        deviationPly,
+        playedMove: opening.deviationMove,
+        bookMove: opening.nextBookMove,
+        reviewPrompt: `${opening.name} 第 ${deviationPly} ply 脱谱：实战 ${opening.deviationMove}，建议复习库线 ${opening.nextBookMove}。`,
+        tags: ['开局'],
+      });
+    }
+
+    statMap.set(key, existing);
+  });
+
+  const commonOpenings = Array.from(statMap.values())
+    .map((stat) => ({
+      ...stat,
+      deviationRate: stat.games === 0 ? 0 : Math.round((stat.deviations / stat.games) * 100),
+    }))
+    .sort((a, b) => b.deviations - a.deviations || b.games - a.games || a.name.localeCompare(b.name));
+
+  const summary = `常下开局 ${commonOpenings.length} 个 · 开局分歧 ${deviationCards.length} 个`;
+
+  return {
+    commonOpenings,
+    deviationCards,
+    summary,
+  };
+}
+
+function classifyMiddlegameTheme(analysis: GlobalMoveAnalysis) {
+  const san = analysis.san;
+  if (/^[a-h][34-6]?$/i.test(san) || /^[a-h]x/i.test(san)) {
+    return san.match(/^[fghe]/i) ? '王翼兵形/王安全' : '中心与兵形';
+  }
+  if (/x/.test(san)) {
+    return '换子与战术计算';
+  }
+  if (/^[NBRQK]/.test(san)) {
+    return '子力协调/最差子改善';
+  }
+  return '候选着法与风险控制';
+}
+
+function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): MiddlegamePlanTraining {
+  const middlegameAnalyses = analyses.filter((item) => item.moveIndex >= 8 && item.moveIndex <= 40);
+  const riskyMoves = middlegameAnalyses
+    .filter((item) => item.isSwingPoint || item.quality === '失误' || item.quality === '败着')
+    .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
+
+  const focusCards = riskyMoves.slice(0, 4).map((item) => {
+    const theme = classifyMiddlegameTheme(item);
+    const priority = item.quality === '败着' ? 100 : item.quality === '失误' ? 80 : 60;
+    return {
+      id: `middlegame-${item.moveIndex}-${normalizeSan(item.san)}`,
+      moveIndex: item.moveIndex,
+      label: item.label,
+      san: item.san,
+      topic: item.centipawnLoss >= 300 ? '候选着法与风险控制' : theme,
+      priority,
+      recommendedPlan: `复盘 ${item.label} 前的候选计划；优先比较实战 ${item.san} 与引擎首选 ${item.bestMoveSan || '暂未分析'} 的战略目标。`,
+      reason: `该手损失 ${item.centipawnLoss} cp${item.isSwingPoint ? '，并触发局势突变' : ''}。`,
+      tags: ['中局', item.quality],
+    } satisfies MiddlegamePlanCard;
+  });
+
+  const themeMap = new Map<string, MiddlegameThemeStat>();
+  middlegameAnalyses
+    .filter((item) => item.quality !== '好棋')
+    .forEach((item) => {
+      const theme = classifyMiddlegameTheme(item);
+      const current = themeMap.get(theme) ?? { theme, count: 0, totalLoss: 0 };
+      current.count += 1;
+      current.totalLoss += item.centipawnLoss;
+      themeMap.set(theme, current);
+    });
+
+  const themeStats = [...themeMap.values()].sort((a, b) => b.totalLoss - a.totalLoss || b.count - a.count);
+  const summary = focusCards.length
+    ? `发现 ${focusCards.length} 个关键中局计划点，优先训练：${focusCards[0].topic}。`
+    : '暂未发现明显中局计划训练点；建议先运行整盘分析。';
+
+  return { focusCards, themeStats, summary };
+}
+
 function normalizeSan(san: string) {
   return san.replace(/[+#?!]+/g, '');
+}
+
+type PgnReplyAfterGuess = {
+  isCorrectGuess: boolean;
+  playerTargetIndex: number;
+  nextIndex: number;
+  replyMoveSan?: string;
+  message: string;
+};
+
+function getPgnReplyAfterCorrectGuess({
+  guessedSan,
+  moves,
+  currentIndex,
+  maxIndex,
+}: {
+  guessedSan: string;
+  moves: Array<Pick<Move, 'san'>>;
+  currentIndex: number;
+  maxIndex: number;
+}): PgnReplyAfterGuess {
+  const actualMove = moves[currentIndex];
+  const playerTargetIndex = Math.min(currentIndex + 1, maxIndex);
+
+  if (!actualMove || normalizeSan(guessedSan) !== normalizeSan(actualMove.san)) {
+    return {
+      isCorrectGuess: false,
+      playerTargetIndex,
+      nextIndex: currentIndex,
+      message: actualMove
+        ? `未猜中实战手 ${actualMove.san}，保持当前题目复盘。`
+        : '当前没有可应答的棋谱下一手。',
+    };
+  }
+
+  const replyMove = moves[playerTargetIndex];
+  if (!replyMove) {
+    return {
+      isCorrectGuess: true,
+      playerTargetIndex,
+      nextIndex: playerTargetIndex,
+      message: `猜对实战手 ${actualMove.san}，棋谱已到末尾。`,
+    };
+  }
+
+  const nextIndex = Math.min(playerTargetIndex + 1, maxIndex);
+  return {
+    isCorrectGuess: true,
+    playerTargetIndex,
+    replyMoveSan: replyMove.san,
+    nextIndex,
+    message: `猜对实战手 ${actualMove.san}，电脑按棋谱回应 ${replyMove.san}。`,
+  };
+}
+
+function analyzeGuessMove({
+  guessedSan,
+  actualSan,
+  stockfishBestSan,
+}: {
+  guessedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+}): GuessMoveResult {
+  const isCorrect = normalizeSan(guessedSan) === normalizeSan(actualSan);
+  const matchesStockfish = Boolean(stockfishBestSan) && normalizeSan(guessedSan) === normalizeSan(stockfishBestSan);
+  const summary = [
+    isCorrect ? '猜对实战手' : '未猜中实战手',
+    `你的选择：${guessedSan}`,
+    `实战手：${actualSan}`,
+    `Stockfish 首选：${stockfishBestSan || '暂未分析'}`,
+    matchesStockfish ? '同时命中引擎首选。' : '可对照实战选择与引擎计划复盘。',
+  ].join(' · ');
+
+  return {
+    guessedSan,
+    actualSan,
+    stockfishBestSan,
+    isCorrect,
+    matchesStockfish,
+    summary,
+  };
+}
+
+function parseCandidateMoveEntries(rawCandidates: string): CandidateMoveEntry[] {
+  return rawCandidates
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((line) => {
+      const [moveSan = '', ...reasonParts] = line.split(/\s*(?:-|：|:)\s*|\s{2,}/);
+      return {
+        moveSan: moveSan.trim(),
+        reason: reasonParts.join(' ').trim(),
+      };
+    })
+    .filter((entry) => entry.moveSan.length > 0);
+}
+
+function analyzeCandidateMoveTraining({
+  rawCandidates,
+  selectedSan,
+  actualSan,
+  stockfishBestSan,
+}: {
+  rawCandidates: string;
+  selectedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+}): CandidateMoveTrainingResult {
+  const entries = parseCandidateMoveEntries(rawCandidates);
+  const candidateCount = entries.length;
+  const normalizedCandidates = entries.map((entry) => normalizeSan(entry.moveSan));
+  const normalizedSelected = normalizeSan(selectedSan);
+  const normalizedActual = normalizeSan(actualSan);
+  const normalizedBest = normalizeSan(stockfishBestSan);
+  const isValid = candidateCount >= 2;
+  const hasActualInCandidates = normalizedCandidates.includes(normalizedActual);
+  const hasBestInCandidates = Boolean(stockfishBestSan) && normalizedCandidates.includes(normalizedBest);
+  const selectedIsActual = normalizedSelected === normalizedActual;
+  const selectedIsBest = Boolean(stockfishBestSan) && normalizedSelected === normalizedBest;
+  const answerInCandidatesButNotSelected = hasActualInCandidates && !selectedIsActual;
+  const sortingScore = Math.round(
+    ((hasActualInCandidates ? 1 : 0) + (hasBestInCandidates ? 1 : 0) + (selectedIsActual || selectedIsBest ? 1 : 0)) *
+      (100 / 3),
+  );
+  const validationMessage = isValid ? '' : '至少写出 2 个候选着法，并为每个候选写一句理由。';
+  const summary = isValid
+    ? [
+        `候选 ${candidateCount} 个`,
+        hasActualInCandidates ? '实战答案进入候选' : '实战答案未进入候选',
+        stockfishBestSan ? (hasBestInCandidates ? '引擎首选进入候选' : '引擎首选未进入候选') : '暂未分析引擎首选',
+        answerInCandidatesButNotSelected ? '答案在候选里，但最终没选中' : '最终选择与候选排序一致性可复盘',
+        `排序得分 ${sortingScore}`,
+      ].join(' · ')
+    : validationMessage;
+
+  return {
+    entries,
+    candidateCount,
+    isValid,
+    validationMessage,
+    selectedSan,
+    actualSan,
+    stockfishBestSan,
+    hasActualInCandidates,
+    hasBestInCandidates,
+    selectedIsActual,
+    selectedIsBest,
+    answerInCandidatesButNotSelected,
+    sortingScore,
+    summary,
+  };
+}
+
+function buildMistakeCardFromGuess({
+  baseFen,
+  positionLabel,
+  result,
+  pgnText,
+}: {
+  baseFen: string;
+  positionLabel: string;
+  result: GuessMoveResult;
+  pgnText: string;
+}): MistakeCard | null {
+  if (result.isCorrect) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  return {
+    id: `${baseFen}:${normalizeSan(result.actualSan)}`,
+    fen: baseFen,
+    positionLabel,
+    guessedSan: result.guessedSan,
+    actualSan: result.actualSan,
+    stockfishBestSan: result.stockfishBestSan,
+    pgnText,
+    attempts: 1,
+    solvedCount: 0,
+    reviewStage: 0,
+    dueAt: now,
+    tags: ['猜下一手'],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function upsertMistakeCard(cards: MistakeCard[], card: MistakeCard): MistakeCard[] {
+  const index = cards.findIndex((item) => item.id === card.id);
+  if (index < 0) {
+    return [card, ...cards];
+  }
+
+  return cards.map((item, itemIndex) =>
+    itemIndex === index
+      ? {
+          ...item,
+          ...card,
+          attempts: item.attempts + 1,
+          solvedCount: item.solvedCount,
+          reviewStage: 0,
+          dueAt: card.dueAt,
+          createdAt: item.createdAt,
+          updatedAt: card.updatedAt,
+        }
+      : item,
+  );
+}
+
+function getSpacedReviewIntervalDays(reviewStage: number) {
+  const intervals = [1, 3, 7, 14];
+  return intervals[Math.min(Math.max(reviewStage, 0), intervals.length - 1)];
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function normalizeMistakeCard(card: MistakeCard): MistakeCard {
+  const now = card.updatedAt || card.createdAt || new Date().toISOString();
+  return {
+    ...card,
+    reviewStage: card.reviewStage ?? 0,
+    dueAt: card.dueAt ?? now,
+  };
+}
+
+function updateMistakeCardReview(card: MistakeCard, solved: boolean, reviewedAt = new Date()): MistakeCard {
+  const normalized = normalizeMistakeCard(card);
+  const nextStage = solved ? Math.min(normalized.reviewStage + 1, 3) : 0;
+  const dueAt = solved ? addDays(reviewedAt, getSpacedReviewIntervalDays(nextStage)).toISOString() : reviewedAt.toISOString();
+
+  return {
+    ...normalized,
+    attempts: normalized.attempts + 1,
+    solvedCount: solved ? normalized.solvedCount + 1 : normalized.solvedCount,
+    reviewStage: nextStage,
+    dueAt,
+    updatedAt: reviewedAt.toISOString(),
+  };
+}
+
+function buildDailyTrainingPlan(cards: MistakeCard[], now = new Date(), limit = 10) {
+  const normalizedCards = cards.map(normalizeMistakeCard);
+  const dueCards = normalizedCards
+    .filter((card) => new Date(card.dueAt).getTime() <= now.getTime())
+    .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+  const dueIds = new Set(dueCards.map((card) => card.id));
+  const weakTagCards = normalizedCards
+    .filter((card) => !dueIds.has(card.id))
+    .sort((a, b) => {
+      const tagPriority = Number(b.tags.length > 0) - Number(a.tags.length > 0);
+      if (tagPriority !== 0) {
+        return tagPriority;
+      }
+      return a.solvedCount - b.solvedCount || b.attempts - a.attempts;
+    });
+
+  return [...dueCards, ...weakTagCards].slice(0, limit);
+}
+
+function buildTrainingStatsByTag(cards: MistakeCard[]) {
+  const stats = new Map<string, { tag: string; attempts: number; solvedCount: number; accuracy: number }>();
+
+  cards.map(normalizeMistakeCard).forEach((card) => {
+    card.tags.forEach((tag) => {
+      const current = stats.get(tag) ?? { tag, attempts: 0, solvedCount: 0, accuracy: 0 };
+      current.attempts += card.attempts;
+      current.solvedCount += card.solvedCount;
+      current.accuracy = current.attempts ? Math.round((current.solvedCount / current.attempts) * 100) : 0;
+      stats.set(tag, current);
+    });
+  });
+
+  return [...stats.values()].sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts);
+}
+
+function scoreToWhiteCentipawns(score: StockfishAnalysis['score']) {
+  if (!score) {
+    return null;
+  }
+
+  if (score.type === 'mate') {
+    return score.value > 0 ? 10000 : -10000;
+  }
+
+  return score.value;
+}
+
+function classifyMoveFromEvaluationDrop(centipawnLoss: number): MoveQualityLabel {
+  if (centipawnLoss >= 300) {
+    return '败着';
+  }
+
+  if (centipawnLoss >= 150) {
+    return '失误';
+  }
+
+  if (centipawnLoss >= 60) {
+    return '疑问手';
+  }
+
+  return '好棋';
+}
+
+function detectSwingPoint(beforeScore: number | null, afterScore: number | null, centipawnLoss: number) {
+  if (beforeScore === null || afterScore === null) {
+    return false;
+  }
+
+  const crossedBalance = Math.sign(beforeScore) !== Math.sign(afterScore) && Math.abs(beforeScore - afterScore) >= 120;
+  return centipawnLoss >= swingPointThreshold || crossedBalance;
+}
+
+function getMoverCentipawnLoss(move: Move, beforeScore: number | null, afterScore: number | null) {
+  if (beforeScore === null || afterScore === null) {
+    return 0;
+  }
+
+  const deltaForWhite = afterScore - beforeScore;
+  const moverDelta = move.color === 'w' ? deltaForWhite : -deltaForWhite;
+  return Math.max(0, -moverDelta);
+}
+
+function loadStoredGuessStats(): GuessStats {
+  try {
+    const rawStats = window.localStorage.getItem(guessStatsStorageKey);
+    if (!rawStats) {
+      return { correct: 0, wrong: 0 };
+    }
+
+    const parsed = JSON.parse(rawStats) as Partial<GuessStats>;
+    return {
+      correct: Number(parsed.correct) || 0,
+      wrong: Number(parsed.wrong) || 0,
+    };
+  } catch {
+    return { correct: 0, wrong: 0 };
+  }
+}
+
+function saveStoredGuessStats(stats: GuessStats) {
+  window.localStorage.setItem(guessStatsStorageKey, JSON.stringify(stats));
+}
+
+function loadStoredMistakeCards(): MistakeCard[] {
+  try {
+    const rawCards = window.localStorage.getItem(mistakeBookStorageKey);
+    if (!rawCards) {
+      return [];
+    }
+
+    const parsed = JSON.parse(rawCards) as MistakeCard[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredMistakeCards(cards: MistakeCard[]) {
+  window.localStorage.setItem(mistakeBookStorageKey, JSON.stringify(cards));
+}
+
+function getInitialCandidateTrainingStats(): CandidateTrainingStats {
+  return {
+    sessions: 0,
+    validSessions: 0,
+    answerCovered: 0,
+    bestCovered: 0,
+    answerInCandidatesButNotSelected: 0,
+    sortingScoreTotal: 0,
+  };
+}
+
+function loadStoredCandidateTrainingStats(): CandidateTrainingStats {
+  try {
+    const rawStats = window.localStorage.getItem(candidateTrainingStatsStorageKey);
+    if (!rawStats) {
+      return getInitialCandidateTrainingStats();
+    }
+
+    const parsed = JSON.parse(rawStats) as Partial<CandidateTrainingStats>;
+    return {
+      sessions: Number(parsed.sessions) || 0,
+      validSessions: Number(parsed.validSessions) || 0,
+      answerCovered: Number(parsed.answerCovered) || 0,
+      bestCovered: Number(parsed.bestCovered) || 0,
+      answerInCandidatesButNotSelected: Number(parsed.answerInCandidatesButNotSelected) || 0,
+      sortingScoreTotal: Number(parsed.sortingScoreTotal) || 0,
+    };
+  } catch {
+    return getInitialCandidateTrainingStats();
+  }
+}
+
+function saveStoredCandidateTrainingStats(stats: CandidateTrainingStats) {
+  window.localStorage.setItem(candidateTrainingStatsStorageKey, JSON.stringify(stats));
+}
+
+function loadStoredCandidateTrainingSessions(): CandidateTrainingSession[] {
+  try {
+    const rawSessions = window.localStorage.getItem(candidateTrainingSessionsStorageKey);
+    if (!rawSessions) {
+      return [];
+    }
+
+    const parsed = JSON.parse(rawSessions) as CandidateTrainingSession[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredCandidateTrainingSessions(sessions: CandidateTrainingSession[]) {
+  window.localStorage.setItem(candidateTrainingSessionsStorageKey, JSON.stringify(sessions));
+}
+
+function updateCandidateTrainingStats(
+  stats: CandidateTrainingStats,
+  result: CandidateMoveTrainingResult,
+): CandidateTrainingStats {
+  return {
+    sessions: stats.sessions + 1,
+    validSessions: stats.validSessions + (result.isValid ? 1 : 0),
+    answerCovered: stats.answerCovered + (result.hasActualInCandidates ? 1 : 0),
+    bestCovered: stats.bestCovered + (result.hasBestInCandidates ? 1 : 0),
+    answerInCandidatesButNotSelected:
+      stats.answerInCandidatesButNotSelected + (result.answerInCandidatesButNotSelected ? 1 : 0),
+    sortingScoreTotal: stats.sortingScoreTotal + (result.isValid ? result.sortingScore : 0),
+  };
 }
 
 function getTrainingExplanation({
@@ -834,11 +1544,32 @@ function App() {
   const [engineMode, setEngineMode] = useState<EngineMode>('wasm');
   const [engineLog, setEngineLog] = useState<string[]>([]);
   const [savedVariations, setSavedVariations] = useState<SavedVariation[]>([]);
+  const [isGuessMode, setIsGuessMode] = useState(false);
+  const [guessResult, setGuessResult] = useState<GuessMoveResult | null>(null);
+  const [pgnReplyMessage, setPgnReplyMessage] = useState('');
+  const [guessStats, setGuessStats] = useState<GuessStats>(() =>
+    typeof window === 'undefined' ? { correct: 0, wrong: 0 } : loadStoredGuessStats(),
+  );
+  const [mistakeCards, setMistakeCards] = useState<MistakeCard[]>(() =>
+    typeof window === 'undefined' ? [] : loadStoredMistakeCards(),
+  );
+  const [candidateInput, setCandidateInput] = useState('');
+  const [candidateResult, setCandidateResult] = useState<CandidateMoveTrainingResult | null>(null);
+  const [candidateStats, setCandidateStats] = useState<CandidateTrainingStats>(() =>
+    typeof window === 'undefined' ? getInitialCandidateTrainingStats() : loadStoredCandidateTrainingStats(),
+  );
+  const [candidateSessions, setCandidateSessions] = useState<CandidateTrainingSession[]>(() =>
+    typeof window === 'undefined' ? [] : loadStoredCandidateTrainingSessions(),
+  );
+  const [globalAnalysis, setGlobalAnalysis] = useState<GlobalMoveAnalysis[]>([]);
+  const [isGlobalAnalyzing, setIsGlobalAnalyzing] = useState(false);
+  const [globalAnalysisProgress, setGlobalAnalysisProgress] = useState('');
   const engineRef = useRef<Worker | null>(null);
   const engineReadyRef = useRef(false);
   const engineReadyTimerRef = useRef<number | null>(null);
   const engineModeRef = useRef<EngineMode>('wasm');
   const analysisFenRef = useRef('');
+  const engineRequestRef = useRef<EngineAnalysisRequest | null>(null);
 
   const result = useMemo(
     () => (mode === 'pgn' ? parsePgn(text) : parseFen(text)),
@@ -865,8 +1596,20 @@ function App() {
       variationIndex >= 0 ? variationPositions.slice(0, variationIndex + 1).map((position) => position.move.san) : [];
     return [...originalMoves, ...activeVariationMoves];
   }, [result.moves, safeIndex, variationIndex, variationPositions]);
+  const trainingPlan = useMemo(() => buildDailyTrainingPlan(mistakeCards, new Date(), 10), [mistakeCards]);
+  const dueTrainingCount = useMemo(
+    () => mistakeCards.filter((card) => new Date(normalizeMistakeCard(card).dueAt).getTime() <= Date.now()).length,
+    [mistakeCards],
+  );
+  const trainingStatsByTag = useMemo(() => buildTrainingStatsByTag(mistakeCards), [mistakeCards]);
   const openingMatch = useMemo(() => identifyOpening(playedMoves), [playedMoves]);
+  const openingImprovementPlan = useMemo(
+    () => buildOpeningImprovementPlan(mode === 'pgn' ? [result.moves.map((move) => move.san)] : []),
+    [mode, result.moves],
+  );
+  const middlegamePlanTraining = useMemo(() => buildMiddlegamePlanTraining(globalAnalysis), [globalAnalysis]);
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
+  const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -900,6 +1643,22 @@ function App() {
   useEffect(() => {
     saveStoredNotes(notesByPosition);
   }, [notesByPosition]);
+
+  useEffect(() => {
+    saveStoredGuessStats(guessStats);
+  }, [guessStats]);
+
+  useEffect(() => {
+    saveStoredMistakeCards(mistakeCards);
+  }, [mistakeCards]);
+
+  useEffect(() => {
+    saveStoredCandidateTrainingStats(candidateStats);
+  }, [candidateStats]);
+
+  useEffect(() => {
+    saveStoredCandidateTrainingSessions(candidateSessions);
+  }, [candidateSessions]);
 
   useEffect(() => {
     return () => {
@@ -971,8 +1730,16 @@ function App() {
       }
 
       const currentFen = analysisFenRef.current;
+      const pendingRequest = engineRequestRef.current;
       const partialAnalysis = parseStockfishInfo(line, currentFen);
       if (partialAnalysis) {
+        if (pendingRequest) {
+          pendingRequest.latest = {
+            ...pendingRequest.latest,
+            ...partialAnalysis,
+          };
+        }
+
         setAnalysis((currentAnalysis) => ({
           depth: partialAnalysis.depth ?? currentAnalysis?.depth ?? 0,
           score: partialAnalysis.score ?? currentAnalysis?.score ?? null,
@@ -984,14 +1751,23 @@ function App() {
 
       if (line.startsWith('bestmove ')) {
         const bestMove = line.split(/\s+/)[1] ?? '';
+        const bestMoveSan = formatBestMove(currentFen, bestMove);
         addEngineLog(`bestmove ${bestMove}`);
-        setAnalysis((currentAnalysis) => ({
-          depth: currentAnalysis?.depth ?? 0,
-          score: currentAnalysis?.score ?? null,
-          pv: currentAnalysis?.pv ?? [],
+        const completedAnalysis: StockfishAnalysis = {
+          depth: pendingRequest?.latest.depth ?? 0,
+          score: pendingRequest?.latest.score ?? null,
+          pv: pendingRequest?.latest.pv ?? [],
           bestMove,
-          bestMoveSan: formatBestMove(currentFen, bestMove),
-        }));
+          bestMoveSan,
+        };
+
+        if (pendingRequest) {
+          window.clearTimeout(pendingRequest.timeoutId);
+          engineRequestRef.current = null;
+          pendingRequest.resolve(completedAnalysis);
+        }
+
+        setAnalysis(completedAnalysis);
         setEngineStatus('ready');
       }
     };
@@ -1047,7 +1823,7 @@ function App() {
     return worker;
   };
 
-  const startAnalysisForFen = (fen: string) => {
+  const startAnalysisForFen = (fen: string, depth = 14) => {
     try {
       const engine = getEngine();
       analysisFenRef.current = fen;
@@ -1062,12 +1838,42 @@ function App() {
       engine.postMessage('stop');
       engine.postMessage('ucinewgame');
       engine.postMessage(`position fen ${fen}`);
-      engine.postMessage('go depth 14');
+      engine.postMessage(`go depth ${depth}`);
     } catch {
       setEngineStatus('error');
       showToast({ type: 'error', text: 'Stockfish 无法启动。' });
     }
   };
+
+  const analyzeFenOnce = (fen: string, depth = globalAnalysisDepth) =>
+    new Promise<StockfishAnalysis>((resolve, reject) => {
+      const engine = getEngine();
+      if (engineRequestRef.current) {
+        window.clearTimeout(engineRequestRef.current.timeoutId);
+        engineRequestRef.current.reject(new Error('新的分析请求已取代旧请求。'));
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (engineRequestRef.current?.fen === fen) {
+          engineRequestRef.current = null;
+          reject(new Error('Stockfish 分析超时。'));
+        }
+      }, 15000);
+
+      engineRequestRef.current = {
+        fen,
+        resolve,
+        reject,
+        latest: {},
+        timeoutId,
+      };
+      analysisFenRef.current = fen;
+      setEngineStatus('analyzing');
+      engine.postMessage('stop');
+      engine.postMessage('ucinewgame');
+      engine.postMessage(`position fen ${fen}`);
+      engine.postMessage(`go depth ${depth}`);
+    });
 
   useEffect(() => {
     engineRef.current?.postMessage('stop');
@@ -1089,8 +1895,222 @@ function App() {
 
   const stopAnalysis = () => {
     setIsAnalysisEnabled(false);
+    if (engineRequestRef.current) {
+      window.clearTimeout(engineRequestRef.current.timeoutId);
+      engineRequestRef.current.reject(new Error('分析已关闭。'));
+      engineRequestRef.current = null;
+    }
     engineRef.current?.postMessage('stop');
     setEngineStatus(engineRef.current ? 'ready' : 'idle');
+  };
+
+  const toggleGuessMode = () => {
+    setIsGuessMode((enabled) => !enabled);
+    setGuessResult(null);
+    setPgnReplyMessage('');
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+  };
+
+  const handleGuessSubmitted = (move: Move) => {
+    if (!isGuessMode || guessResult || !nextOriginalMove) {
+      return;
+    }
+
+    const guessAnalysis = analyzeGuessMove({
+      guessedSan: move.san,
+      actualSan: nextOriginalMove.san,
+      stockfishBestSan: analysis?.bestMoveSan ?? '',
+    });
+    const candidateTrainingResult = candidateInput.trim()
+      ? analyzeCandidateMoveTraining({
+          rawCandidates: candidateInput,
+          selectedSan: move.san,
+          actualSan: nextOriginalMove.san,
+          stockfishBestSan: analysis?.bestMoveSan ?? '',
+        })
+      : null;
+    setGuessResult(guessAnalysis);
+    if (candidateTrainingResult) {
+      setCandidateResult(candidateTrainingResult);
+      setCandidateStats((stats) => updateCandidateTrainingStats(stats, candidateTrainingResult));
+      setCandidateSessions((sessions) => [
+        {
+          id: `${Date.now()}:${originalFen}`,
+          positionLabel: nextOriginalMove ? formatMoveLabel(nextOriginalMove, safeIndex) : current?.label ?? '当前局面',
+          result: candidateTrainingResult,
+          createdAt: new Date().toISOString(),
+        },
+        ...sessions,
+      ].slice(0, 20));
+    }
+    setGuessStats((stats) => ({
+      correct: stats.correct + (guessAnalysis.isCorrect ? 1 : 0),
+      wrong: stats.wrong + (guessAnalysis.isCorrect ? 0 : 1),
+    }));
+
+    const mistakeCard = buildMistakeCardFromGuess({
+      baseFen: originalFen,
+      positionLabel: nextOriginalMove ? formatMoveLabel(nextOriginalMove, safeIndex) : current?.label ?? '当前局面',
+      result: guessAnalysis,
+      pgnText: mode === 'pgn' ? text : '',
+    });
+    if (mistakeCard) {
+      setMistakeCards((cards) => upsertMistakeCard(cards, mistakeCard));
+    }
+
+    const pgnReply = getPgnReplyAfterCorrectGuess({
+      guessedSan: move.san,
+      moves: result.moves,
+      currentIndex: safeIndex,
+      maxIndex,
+    });
+    if (pgnReply.isCorrectGuess) {
+      setPgnReplyMessage(pgnReply.message);
+      setPositionIndex(pgnReply.nextIndex);
+      setVariationPositions([]);
+      setVariationIndex(-1);
+    } else {
+      setPgnReplyMessage('');
+    }
+
+    showToast({ type: guessAnalysis.isCorrect ? 'success' : 'error', text: pgnReply.isCorrectGuess ? pgnReply.message : guessAnalysis.summary });
+  };
+
+  const nextGuessPosition = () => {
+    if (safeIndex >= maxIndex) {
+      return;
+    }
+
+    updatePositionIndex((index) => Math.min(index + 1, maxIndex));
+    setGuessResult(null);
+    setPgnReplyMessage('');
+    setCandidateResult(null);
+    setCandidateInput('');
+  };
+
+  const resetGuessStats = () => {
+    setGuessStats({ correct: 0, wrong: 0 });
+  };
+
+  const resetCandidateTraining = () => {
+    setCandidateInput('');
+    setCandidateResult(null);
+    setCandidateStats(getInitialCandidateTrainingStats());
+    setCandidateSessions([]);
+  };
+
+  const addCurrentPositionToMistakeBook = () => {
+    const actualSan = nextOriginalMove?.san ?? '待复盘';
+    const now = new Date().toISOString();
+    const card: MistakeCard = {
+      id: `${originalFen}:${normalizeSan(actualSan)}`,
+      fen: originalFen,
+      positionLabel: nextOriginalMove ? formatMoveLabel(nextOriginalMove, safeIndex) : current?.label ?? '当前局面',
+      guessedSan: '手动加入',
+      actualSan,
+      stockfishBestSan: analysis?.bestMoveSan ?? '',
+      pgnText: mode === 'pgn' ? text : '',
+      attempts: 1,
+      solvedCount: 0,
+      reviewStage: 0,
+      dueAt: now,
+      tags: ['手动加入'],
+      createdAt: now,
+      updatedAt: now,
+    };
+    setMistakeCards((cards) => upsertMistakeCard(cards, card));
+    showToast({ type: 'success', text: '已加入错题本。' });
+  };
+
+  const practiceMistakeCard = (card: MistakeCard) => {
+    setMode('fen');
+    setText(card.fen);
+    setPositionIndex(0);
+    setVariationPositions([]);
+    setVariationIndex(-1);
+    setSelectedSquare(null);
+    setPendingPromotion(null);
+    setGuessResult(null);
+    setPgnReplyMessage('');
+    setIsGuessMode(false);
+    setMistakeCards((cards) => cards.map((item) => (item.id === card.id ? updateMistakeCardReview(item, true) : item)));
+    showToast({ type: 'success', text: '已载入错题局面，本次复习记为完成并安排下次间隔复习。' });
+  };
+
+  const markMistakeCardUnsolved = (card: MistakeCard) => {
+    setMistakeCards((cards) => cards.map((item) => (item.id === card.id ? updateMistakeCardReview(item, false) : item)));
+    showToast({ type: 'error', text: '已记录为仍需复习，错题会保留在今日训练计划。' });
+  };
+
+  const deleteMistakeCard = (id: string) => {
+    setMistakeCards((cards) => cards.filter((card) => card.id !== id));
+  };
+
+  const runGlobalAnalysis = async () => {
+    if (mode !== 'pgn' || result.moves.length === 0 || result.error) {
+      showToast({ type: 'error', text: '请先导入包含走法的 PGN 棋谱。' });
+      return;
+    }
+
+    setIsGlobalAnalyzing(true);
+    setGlobalAnalysis([]);
+    setGlobalAnalysisProgress('准备分析整盘棋…');
+    setIsAnalysisEnabled(false);
+
+    try {
+      const positionScores = new Map<number, number | null>();
+      const bestMovesByIndex = new Map<number, string>();
+
+      for (let index = 0; index < result.moves.length; index += 1) {
+        const beforeFen = result.positions[index]?.fen;
+        if (!beforeFen) {
+          continue;
+        }
+
+        setGlobalAnalysisProgress(`分析第 ${index + 1}/${result.moves.length} 手之前局面…`);
+        const beforeAnalysis = await analyzeFenOnce(beforeFen);
+        positionScores.set(index, scoreToWhiteCentipawns(beforeAnalysis.score));
+        bestMovesByIndex.set(index, beforeAnalysis.bestMoveSan || beforeAnalysis.bestMove);
+      }
+
+      const finalFen = result.positions[result.moves.length]?.fen;
+      if (finalFen) {
+        setGlobalAnalysisProgress('分析终局局面…');
+        const finalAnalysis = await analyzeFenOnce(finalFen);
+        positionScores.set(result.moves.length, scoreToWhiteCentipawns(finalAnalysis.score));
+      }
+
+      const report = result.moves.map((move, index) => {
+        const beforeScore = positionScores.get(index) ?? null;
+        const afterScore = positionScores.get(index + 1) ?? null;
+        const centipawnLoss = Math.round(getMoverCentipawnLoss(move, beforeScore, afterScore));
+        return {
+          moveIndex: index,
+          label: formatMoveLabel(move, index),
+          san: move.san,
+          quality: classifyMoveFromEvaluationDrop(centipawnLoss),
+          centipawnLoss,
+          beforeScore,
+          afterScore,
+          isSwingPoint: detectSwingPoint(beforeScore, afterScore, centipawnLoss),
+          bestMoveSan: bestMovesByIndex.get(index) ?? '',
+        };
+      });
+
+      setGlobalAnalysis(report);
+      setGlobalAnalysisProgress(`完成：已分析 ${report.length} 手。`);
+      setEngineStatus('ready');
+      showToast({ type: 'success', text: '整盘棋分析完成。' });
+    } catch (error) {
+      setGlobalAnalysisProgress(error instanceof Error ? error.message : '整盘棋分析失败。');
+      setEngineStatus('error');
+      showToast({ type: 'error', text: '整盘棋分析失败，请稍后重试。' });
+    } finally {
+      setIsGlobalAnalyzing(false);
+    }
   };
 
   const updatePositionIndex = (nextIndex: number | ((index: number) => number)) => {
@@ -1099,6 +2119,7 @@ function App() {
     setVariationIndex(-1);
     setSelectedSquare(null);
     setPendingPromotion(null);
+    setGuessResult(null);
   };
 
   const updateMode = (nextMode: ReplayMode) => {
@@ -1109,6 +2130,9 @@ function App() {
     setVariationIndex(-1);
     setSelectedSquare(null);
     setPendingPromotion(null);
+    setGuessResult(null);
+    setGlobalAnalysis([]);
+    setGlobalAnalysisProgress('');
   };
 
   const updateText = (value: string) => {
@@ -1118,6 +2142,9 @@ function App() {
     setVariationIndex(-1);
     setSelectedSquare(null);
     setPendingPromotion(null);
+    setGuessResult(null);
+    setGlobalAnalysis([]);
+    setGlobalAnalysisProgress('');
   };
 
   const updateCurrentNote = (value: string) => {
@@ -1268,6 +2295,7 @@ function App() {
       setVariationIndex(nextPositions.length - 1);
       return nextPositions;
     });
+    handleGuessSubmitted(move);
     setSelectedSquare(null);
     setPendingPromotion(null);
     return true;
@@ -1395,6 +2423,36 @@ function App() {
             </button>
           </div>
 
+          <GuessTrainingPanel
+            isEnabled={isGuessMode}
+            nextMove={nextOriginalMove}
+            shouldHideNextMove={shouldHideNextMove}
+            result={guessResult}
+            pgnReplyMessage={pgnReplyMessage}
+            stats={guessStats}
+            candidateInput={candidateInput}
+            candidateResult={candidateResult}
+            candidateStats={candidateStats}
+            candidateSessions={candidateSessions}
+            onCandidateInputChange={setCandidateInput}
+            onToggle={toggleGuessMode}
+            onAnalyze={analyzeCurrentPosition}
+            onNext={nextGuessPosition}
+            onResetStats={resetGuessStats}
+            onResetCandidateTraining={resetCandidateTraining}
+          />
+
+          <MistakeBookPanel
+            cards={mistakeCards}
+            trainingPlan={trainingPlan}
+            dueCount={dueTrainingCount}
+            statsByTag={trainingStatsByTag}
+            onAddCurrent={addCurrentPositionToMistakeBook}
+            onPractice={practiceMistakeCard}
+            onMarkUnsolved={markMistakeCardUnsolved}
+            onDelete={deleteMistakeCard}
+          />
+
           <div className="variation-panel">
             <div>
               <span className="variation-label">{isVariationMode ? '变化图' : '原棋谱'}</span>
@@ -1438,7 +2496,18 @@ function App() {
             onStop={stopAnalysis}
           />
 
-          <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} />
+          <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
+
+          <MiddlegamePlanPanel plan={middlegamePlanTraining} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+
+          <GlobalAnalysisPanel
+            analyses={globalAnalysis}
+            isAnalyzing={isGlobalAnalyzing}
+            progress={globalAnalysisProgress}
+            canAnalyze={mode === 'pgn' && result.moves.length > 0 && !result.error}
+            onAnalyze={runGlobalAnalysis}
+            onSelectMove={(index) => updatePositionIndex(index + 1)}
+          />
 
           {current && (
             <TrainingNotes
@@ -1504,6 +2573,7 @@ function App() {
               activeVariationIndex={variationIndex}
               notesByPosition={notesByPosition}
               noteContext={{ mode, text }}
+              hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
               onSelect={updatePositionIndex}
               onVariationSelect={(index) => {
                 setVariationIndex(index);
@@ -1836,6 +2906,379 @@ function StockfishPanel({
   );
 }
 
+function GuessTrainingPanel({
+  isEnabled,
+  nextMove,
+  shouldHideNextMove,
+  result,
+  pgnReplyMessage,
+  stats,
+  candidateInput,
+  candidateResult,
+  candidateStats,
+  candidateSessions,
+  onCandidateInputChange,
+  onToggle,
+  onAnalyze,
+  onNext,
+  onResetStats,
+  onResetCandidateTraining,
+}: {
+  isEnabled: boolean;
+  nextMove?: Move;
+  shouldHideNextMove: boolean;
+  result: GuessMoveResult | null;
+  pgnReplyMessage: string;
+  stats: GuessStats;
+  candidateInput: string;
+  candidateResult: CandidateMoveTrainingResult | null;
+  candidateStats: CandidateTrainingStats;
+  candidateSessions: CandidateTrainingSession[];
+  onCandidateInputChange: (value: string) => void;
+  onToggle: () => void;
+  onAnalyze: () => void;
+  onNext: () => void;
+  onResetStats: () => void;
+  onResetCandidateTraining: () => void;
+}) {
+  const total = stats.correct + stats.wrong;
+  const accuracy = total ? Math.round((stats.correct / total) * 100) : 0;
+  const candidateCoverage = candidateStats.validSessions
+    ? Math.round((candidateStats.answerCovered / candidateStats.validSessions) * 100)
+    : 0;
+  const candidateAverageScore = candidateStats.validSessions
+    ? Math.round(candidateStats.sortingScoreTotal / candidateStats.validSessions)
+    : 0;
+
+  return (
+    <section className="guess-panel" aria-label="猜下一手训练">
+      <div className="guess-header">
+        <div>
+          <span>猜下一手训练</span>
+          <p>
+            {isEnabled
+              ? shouldHideNextMove
+                ? '已隐藏棋谱下一手：你走对后，电脑会立刻按棋谱自动回应一手，形成连续人机对战训练。'
+                : '本局面暂无可隐藏的下一手。'
+              : '开启后会隐藏棋谱下一手，你走一步，电脑按原棋谱走下一步。'}
+          </p>
+        </div>
+        <button type="button" onClick={onToggle}>
+          {isEnabled ? '退出训练' : '开始训练'}
+        </button>
+      </div>
+
+      <div className="guess-stats">
+        <div>
+          <span>猜对</span>
+          <strong>{stats.correct}</strong>
+        </div>
+        <div>
+          <span>猜错</span>
+          <strong>{stats.wrong}</strong>
+        </div>
+        <div>
+          <span>正确率</span>
+          <strong>{accuracy}%</strong>
+        </div>
+      </div>
+
+      <div className="candidate-training-box">
+        <div className="candidate-training-header">
+          <div>
+            <span>候选着法训练</span>
+            <p>每行一个候选：例如 Nf3 - 发展并控制中心。提交最终走法后统计覆盖率和排序能力。</p>
+          </div>
+          <button type="button" onClick={onResetCandidateTraining} disabled={candidateStats.sessions === 0 && !candidateInput}>
+            清空候选记录
+          </button>
+        </div>
+        <textarea
+          value={candidateInput}
+          onChange={(event) => onCandidateInputChange(event.target.value)}
+          disabled={!isEnabled || Boolean(result)}
+          rows={4}
+          placeholder="Nf3 - 发展王翼并控制中心&#10;Bc4 - 盯住 f7&#10;d4 - 抢中心空间"
+        />
+        <div className="candidate-stats">
+          <div>
+            <span>有效训练</span>
+            <strong>{candidateStats.validSessions}</strong>
+          </div>
+          <div>
+            <span>答案覆盖率</span>
+            <strong>{candidateCoverage}%</strong>
+          </div>
+          <div>
+            <span>平均排序分</span>
+            <strong>{candidateAverageScore}</strong>
+          </div>
+          <div>
+            <span>有答案未选</span>
+            <strong>{candidateStats.answerInCandidatesButNotSelected}</strong>
+          </div>
+        </div>
+      </div>
+
+      {candidateResult && (
+        <div className={`candidate-result ${candidateResult.isValid ? 'valid' : 'invalid'}`}>
+          <strong>{candidateResult.isValid ? '候选复盘结果' : '候选输入不足'}</strong>
+          <p>{candidateResult.summary}</p>
+          {candidateResult.entries.length > 0 && (
+            <ul>
+              {candidateResult.entries.map((entry) => (
+                <li key={`${entry.moveSan}-${entry.reason}`}>
+                  {entry.moveSan}：{entry.reason || '未填写理由'}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {result ? (
+        <div className={`guess-result ${result.isCorrect ? 'correct' : 'wrong'}`}>
+          <strong>{result.isCorrect ? '猜对了' : '未猜中'}</strong>
+          <p>{result.summary}</p>
+          {pgnReplyMessage && <p className="pgn-reply-message">{pgnReplyMessage}</p>}
+        </div>
+      ) : (
+        <p className="guess-hint">
+          {isEnabled && nextMove ? '下一手已遮挡；你走对后，电脑按棋谱自动回应下一手，并把棋盘推进到你的下一回合。' : '可随时开启训练模式。'}
+        </p>
+      )}
+
+      {candidateSessions.length > 0 && (
+        <div className="candidate-session-list">
+          {candidateSessions.slice(0, 3).map((session) => (
+            <span key={session.id}>
+              {session.positionLabel}：{session.result.sortingScore} 分
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="guess-actions">
+        <button type="button" onClick={onAnalyze} disabled={!isEnabled || !nextMove}>
+          分析当前猜题
+        </button>
+        <button type="button" onClick={onNext} disabled={!result || !nextMove}>
+          下一题
+        </button>
+        <button type="button" onClick={onResetStats} disabled={total === 0}>
+          清零记录
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function MistakeBookPanel({
+  cards,
+  trainingPlan,
+  dueCount,
+  statsByTag,
+  onAddCurrent,
+  onPractice,
+  onMarkUnsolved,
+  onDelete,
+}: {
+  cards: MistakeCard[];
+  trainingPlan: MistakeCard[];
+  dueCount: number;
+  statsByTag: Array<{ tag: string; attempts: number; solvedCount: number; accuracy: number }>;
+  onAddCurrent: () => void;
+  onPractice: (card: MistakeCard) => void;
+  onMarkUnsolved: (card: MistakeCard) => void;
+  onDelete: (id: string) => void;
+}) {
+  const displayCards = trainingPlan.length > 0 ? trainingPlan : cards.map(normalizeMistakeCard);
+
+  return (
+    <section className="mistake-book-panel" aria-label="错题本">
+      <div className="mistake-book-header">
+        <div>
+          <span>训练闭环 / 错题本</span>
+          <p>猜错自动入库，按 1/3/7/14 天间隔复习，并优先生成每日 10 题训练计划。</p>
+        </div>
+        <button type="button" onClick={onAddCurrent}>
+          加入当前局面
+        </button>
+      </div>
+
+      <div className="training-loop-summary">
+        <div>
+          <span>今日待复习</span>
+          <strong>{dueCount}</strong>
+        </div>
+        <div>
+          <span>每日计划</span>
+          <strong>{trainingPlan.length}</strong>
+        </div>
+        <div>
+          <span>错题总数</span>
+          <strong>{cards.length}</strong>
+        </div>
+      </div>
+
+      {statsByTag.length > 0 && (
+        <div className="tag-stats">
+          {statsByTag.map((stat) => (
+            <span key={stat.tag}>
+              {stat.tag}：{stat.accuracy}%（{stat.solvedCount}/{stat.attempts}）
+            </span>
+          ))}
+        </div>
+      )}
+
+      {displayCards.length === 0 ? (
+        <p className="mistake-empty">暂无错题。开启猜下一手训练后，猜错的局面会自动进入这里。</p>
+      ) : (
+        <div className="mistake-card-list">
+          {displayCards.map((card) => {
+            const normalized = normalizeMistakeCard(card);
+            const interval = getSpacedReviewIntervalDays(normalized.reviewStage);
+            const isDue = new Date(normalized.dueAt).getTime() <= Date.now();
+            return (
+              <article className={`mistake-card ${isDue ? 'due' : ''}`} key={normalized.id}>
+                <div>
+                  <strong>{normalized.positionLabel}</strong>
+                  <p>
+                    你的选择：{normalized.guessedSan} · 正解：{normalized.actualSan} · 引擎：{normalized.stockfishBestSan || '-'}
+                  </p>
+                  <small>
+                    尝试 {normalized.attempts} 次 · 完成 {normalized.solvedCount} 次 · 阶段 {normalized.reviewStage} · 下次间隔 {interval} 天 · 到期{' '}
+                    {new Date(normalized.dueAt).toLocaleDateString()} · {normalized.tags.join('、')}
+                  </small>
+                </div>
+                <div className="mistake-card-actions">
+                  <button type="button" onClick={() => onPractice(normalized)}>
+                    完成复习
+                  </button>
+                  <button type="button" onClick={() => onMarkUnsolved(normalized)}>
+                    仍需复习
+                  </button>
+                  <button type="button" onClick={() => onDelete(normalized.id)}>
+                    删除
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function GlobalAnalysisPanel({
+  analyses,
+  isAnalyzing,
+  progress,
+  canAnalyze,
+  onAnalyze,
+  onSelectMove,
+}: {
+  analyses: GlobalMoveAnalysis[];
+  isAnalyzing: boolean;
+  progress: string;
+  canAnalyze: boolean;
+  onAnalyze: () => void;
+  onSelectMove: (moveIndex: number) => void;
+}) {
+  const swingPoints = analyses.filter((item) => item.isSwingPoint);
+
+  return (
+    <section className="global-analysis-panel" aria-label="一键全局分析">
+      <div className="global-analysis-header">
+        <div>
+          <span>一键全局分析</span>
+          <p>{progress || '自动分析整盘棋，为每一步打标签并标出局势突变点。'}</p>
+        </div>
+        <button type="button" onClick={onAnalyze} disabled={!canAnalyze || isAnalyzing}>
+          {isAnalyzing ? '分析中…' : '分析整盘'}
+        </button>
+      </div>
+
+      {swingPoints.length > 0 && (
+        <div className="swing-summary">
+          <span>局势突变点</span>
+          <p>{swingPoints.map((item) => item.label).join('、')}</p>
+        </div>
+      )}
+
+      {analyses.length > 0 && (
+        <div className="global-analysis-list">
+          {analyses.map((item) => (
+            <button
+              type="button"
+              key={`${item.moveIndex}-${item.san}`}
+              className={`analysis-row quality-${item.quality} ${item.isSwingPoint ? 'swing' : ''}`}
+              onClick={() => onSelectMove(item.moveIndex)}
+            >
+              <span className="analysis-label">{item.label}</span>
+              <span className="analysis-quality">{item.quality}</span>
+              <span className="analysis-loss">损失 {item.centipawnLoss} cp</span>
+              <span className="analysis-best">首选 {item.bestMoveSan || '-'}</span>
+              {item.isSwingPoint && <strong>突变</strong>}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MiddlegamePlanPanel({
+  plan,
+  onSelectMove,
+}: {
+  plan: MiddlegamePlanTraining;
+  onSelectMove: (moveIndex: number) => void;
+}) {
+  return (
+    <section className="middlegame-plan-panel" aria-label="中局计划训练">
+      <div className="middlegame-plan-header">
+        <span>中局计划训练</span>
+        <strong>{plan.focusCards.length}</strong>
+      </div>
+      <p>{plan.summary}</p>
+
+      {plan.themeStats.length > 0 && (
+        <div className="middlegame-theme-list">
+          {plan.themeStats.slice(0, 4).map((theme) => (
+            <span key={theme.theme}>
+              {theme.theme}：{theme.count} 次 · 损失 {theme.totalLoss} cp
+            </span>
+          ))}
+        </div>
+      )}
+
+      {plan.focusCards.length > 0 ? (
+        <div className="middlegame-card-list">
+          {plan.focusCards.map((card) => (
+            <button
+              type="button"
+              className="middlegame-plan-card"
+              key={card.id}
+              onClick={() => onSelectMove(card.moveIndex)}
+            >
+              <span>
+                {card.label} · {card.topic}
+              </span>
+              <strong>优先级 {card.priority}</strong>
+              <p>{card.recommendedPlan}</p>
+              <small>{card.reason}</small>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="middlegame-empty">运行“一键全局分析”后，会自动生成本局中局计划训练卡。</p>
+      )}
+    </section>
+  );
+}
+
 function SavedVariationsPanel({
   variations,
   onDelete,
@@ -1870,7 +3313,15 @@ function SavedVariationsPanel({
   );
 }
 
-function OpeningPanel({ opening, playedPly }: { opening: OpeningMatch; playedPly: number }) {
+function OpeningPanel({
+  opening,
+  playedPly,
+  improvementPlan,
+}: {
+  opening: OpeningMatch;
+  playedPly: number;
+  improvementPlan: OpeningImprovementPlan;
+}) {
   const statusText: Record<OpeningMatch['status'], string> = {
     start: '起始局面',
     book: '仍在开局库',
@@ -1882,7 +3333,7 @@ function OpeningPanel({ opening, playedPly }: { opening: OpeningMatch; playedPly
   return (
     <section className="opening-panel" aria-label="开局识别">
       <div className="opening-header">
-        <span>开局识别</span>
+        <span>开局提升</span>
         <strong>{opening.eco}</strong>
       </div>
       <h2>{opening.name}</h2>
@@ -1897,6 +3348,37 @@ function OpeningPanel({ opening, playedPly }: { opening: OpeningMatch; playedPly
           分歧点：实战走了 <strong>{opening.deviationMove}</strong>，库线是{' '}
           <strong>{opening.nextBookMove ?? '-'}</strong>
         </p>
+      )}
+
+      <div className="opening-improvement-summary">
+        <span>{improvementPlan.summary}</span>
+        <p>自动识别常下开局、脱谱位置，并把关键开局分歧整理成复习提示。</p>
+      </div>
+
+      {improvementPlan.commonOpenings.length > 0 && (
+        <div className="opening-stat-list">
+          {improvementPlan.commonOpenings.slice(0, 3).map((stat) => (
+            <span key={`${stat.eco}-${stat.name}`}>
+              {stat.eco} {stat.name}：{stat.games} 盘 · 脱谱率 {stat.deviationRate}%
+            </span>
+          ))}
+        </div>
+      )}
+
+      {improvementPlan.deviationCards.length > 0 && (
+        <div className="opening-card-list">
+          {improvementPlan.deviationCards.slice(0, 3).map((card) => (
+            <article className="opening-review-card" key={card.id}>
+              <strong>
+                {card.eco} {card.openingName} · 第 {card.deviationPly} ply
+              </strong>
+              <p>
+                实战 {card.playedMove}，建议复习库线 <strong>{card.bookMove}</strong>
+              </p>
+              <small>{card.reviewPrompt}</small>
+            </article>
+          ))}
+        </div>
       )}
     </section>
   );
@@ -1940,6 +3422,7 @@ function MoveList({
   activeVariationIndex,
   notesByPosition,
   noteContext,
+  hiddenMoveIndex,
   onSelect,
   onVariationSelect,
 }: {
@@ -1954,6 +3437,7 @@ function MoveList({
     mode: ReplayMode;
     text: string;
   };
+  hiddenMoveIndex: number | null;
   onSelect: (index: number) => void;
   onVariationSelect: (index: number) => void;
 }) {
@@ -2008,7 +3492,9 @@ function MoveList({
         />
       </button>
       <div className="moves-grid">
-        {moves.map((move, index) => (
+        {moves.map((move, index) => {
+          const isHidden = hiddenMoveIndex === index;
+          return (
           <button
             type="button"
             key={`${move.lan}-${index}`}
@@ -2016,7 +3502,7 @@ function MoveList({
             onClick={() => onSelect(index + 1)}
           >
             <MoveButtonContent
-              label={formatMoveLabel(move, index)}
+              label={isHidden ? `${formatMoveLabel(move, index).split(' ')[0]} ??` : formatMoveLabel(move, index)}
               hasComment={Boolean(positions[index + 1]?.comment)}
               hasNote={Boolean(
                 positions[index + 1] &&
@@ -2031,7 +3517,8 @@ function MoveList({
               )}
             />
           </button>
-        ))}
+          );
+        })}
       </div>
       <VariationMoveList
         positions={variationPositions}
@@ -2096,4 +3583,22 @@ function VariationMoveList({
   );
 }
 
-export { App };
+export {
+  App,
+  analyzeCandidateMoveTraining,
+  analyzeGuessMove,
+  buildDailyTrainingPlan,
+  buildMistakeCardFromGuess,
+  buildOpeningImprovementPlan,
+  buildMiddlegamePlanTraining,
+  getPgnReplyAfterCorrectGuess,
+  classifyMoveFromEvaluationDrop,
+  detectSwingPoint,
+  getSpacedReviewIntervalDays,
+  identifyOpening,
+  normalizeSan,
+  parseCandidateMoveEntries,
+  scoreToWhiteCentipawns,
+  updateMistakeCardReview,
+  upsertMistakeCard,
+};
