@@ -834,7 +834,8 @@ h2 {
 .opening-panel,
 .middlegame-plan-panel,
 .endgame-training-panel,
-.review-report-panel {
+.review-report-panel,
+.strength-profile-panel {
   display: grid;
   gap: 6px;
   width: min(100%, 720px);
@@ -848,7 +849,8 @@ h2 {
 .opening-header,
 .middlegame-plan-header,
 .endgame-training-header,
-.review-report-header {
+.review-report-header,
+.strength-profile-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -858,7 +860,8 @@ h2 {
 .opening-header span,
 .middlegame-plan-header span,
 .endgame-training-header span,
-.review-report-header span {
+.review-report-header span,
+.strength-profile-header span {
   color: var(--accent-strong);
   font-size: 0.82rem;
   font-weight: 900;
@@ -867,6 +870,7 @@ h2 {
 .opening-header strong,
 .middlegame-plan-header strong,
 .endgame-training-header strong,
+.strength-profile-header strong,
 .review-training-advice strong {
   border: 1px solid rgba(34, 111, 84, 0.28);
   border-radius: 999px;
@@ -883,7 +887,8 @@ h2 {
 .opening-panel p,
 .middlegame-plan-panel p,
 .endgame-training-panel p,
-.review-report-panel p {
+.review-report-panel p,
+.strength-profile-panel p {
   margin: 0;
   color: var(--ink-muted);
   line-height: 1.45;
@@ -997,6 +1002,61 @@ h2 {
   border: 1px dashed rgba(34, 111, 84, 0.28);
   border-radius: 8px;
   padding: 10px;
+}
+
+.strength-radar-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.strength-radar-axis,
+.strength-profile-grid > div,
+.strength-priorities {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(34, 111, 84, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 9px;
+}
+
+.strength-radar-axis div,
+.strength-profile-grid {
+  display: flex;
+  gap: 8px;
+}
+
+.strength-radar-axis div {
+  justify-content: space-between;
+}
+
+.strength-radar-axis span,
+.strength-profile-grid strong,
+.strength-priorities strong {
+  color: #1d2520;
+  font-weight: 900;
+}
+
+.strength-radar-axis progress {
+  width: 100%;
+  accent-color: var(--accent-strong);
+}
+
+.strength-radar-axis small,
+.strength-profile-grid span,
+.strength-priorities span {
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.strength-profile-grid {
+  flex-wrap: wrap;
+}
+
+.strength-profile-grid > div {
+  flex: 1 1 220px;
 }
 
 .review-report-actions {
