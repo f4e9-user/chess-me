@@ -277,11 +277,11 @@ public/stockfish/
 
 ### H. 个人棋力画像
 
-- [ ] 统计最近 N 盘棋的错误分布。
-- [ ] 统计不同阶段失分：开局 / 中局 / 残局。
-- [ ] 统计不同错误类型：漏战术 / 计划错误 / 防守失败 / 时间压力。
-- [ ] 根据数据给出训练优先级。
-- [ ] 建立个人弱点雷达图。
+- [x] 统计最近 N 盘棋的错误分布。
+- [x] 统计不同阶段失分：开局 / 中局 / 残局。
+- [x] 统计不同错误类型：漏战术 / 计划错误 / 防守失败 / 时间压力。
+- [x] 根据数据给出训练优先级。
+- [x] 建立个人弱点雷达图。
 
 ### I. 数据导入与平台集成
 
@@ -320,6 +320,7 @@ npm run build
 npm test -- --run src/App.test.ts -t "middlegame plan training"
 npm test -- --run src/App.test.ts -t "endgame training"
 npm test -- --run src/App.test.ts -t "review report"
+npm test -- --run src/App.test.ts -t "strength profile"
 npm test -- --run src/App.test.ts -t "advances from the player guess"
 npm test -- --run src/App.test.ts -t "opening improvement"
 npm test -- --run src/App.test.ts -t "candidate move training"

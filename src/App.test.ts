@@ -6,6 +6,7 @@ import {
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
   buildReviewReport,
+  buildStrengthProfile,
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
   classifyMoveFromEvaluationDrop,
@@ -150,6 +151,44 @@ describe('opening improvement helpers', () => {
       tags: ['开局'],
     });
     expect(plan.summary).toContain('开局分歧 1 个');
+  });
+});
+
+describe('strength profile helpers', () => {
+  it('summarizes phase losses, mistake types, weak areas, and training priorities', () => {
+    const profile = buildStrengthProfile({
+      analyses: [
+        { moveIndex: 2, label: '2. Nf3', san: 'Nf3', quality: '疑问手', centipawnLoss: 70, beforeScore: 20, afterScore: -50, isSwingPoint: false, bestMoveSan: 'd4' },
+        { moveIndex: 14, label: '8. Bxh7+', san: 'Bxh7+', quality: '败着', centipawnLoss: 360, beforeScore: 70, afterScore: -290, isSwingPoint: true, bestMoveSan: 'Re1' },
+        { moveIndex: 22, label: '12... Qh4', san: 'Qh4', quality: '失误', centipawnLoss: 180, beforeScore: -40, afterScore: 140, isSwingPoint: true, bestMoveSan: 'Qc7' },
+        { moveIndex: 48, label: '25. Kf2', san: 'Kf2', quality: '失误', centipawnLoss: 140, beforeScore: 0, afterScore: -160, isSwingPoint: true, bestMoveSan: 'Ke2' },
+      ],
+      mistakeCards: [
+        { tags: ['战术', '防守'], attempts: 3, solvedCount: 1 },
+        { tags: ['中局计划'], attempts: 2, solvedCount: 0 },
+      ],
+      candidateStats: {
+        sessions: 4,
+        validSessions: 3,
+        answerCovered: 1,
+        bestCovered: 1,
+        answerInCandidatesButNotSelected: 2,
+        sortingScoreTotal: 160,
+      },
+    });
+
+    expect(profile.phaseBreakdown[0]).toMatchObject({ phase: '中局', totalLoss: 540 });
+    expect(profile.mistakeTypes[0].type).toBe('防守失败');
+    expect(profile.weakAreas[0]).toContain('中局');
+    expect(profile.trainingPriorities[0]).toContain('中局');
+    expect(profile.radarAxes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ axis: '开局稳定性' }),
+        expect.objectContaining({ axis: '中局计划' }),
+        expect.objectContaining({ axis: '残局技术' }),
+      ]),
+    );
+    expect(profile.summary).toContain('首要短板');
   });
 });
 

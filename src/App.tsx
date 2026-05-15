@@ -259,6 +259,33 @@ type ReviewReport = {
   markdown: string;
 };
 
+type StrengthPhaseBreakdown = {
+  phase: '开局' | '中局' | '残局';
+  mistakes: number;
+  totalLoss: number;
+};
+
+type StrengthMistakeType = {
+  type: string;
+  count: number;
+  totalLoss: number;
+};
+
+type StrengthRadarAxis = {
+  axis: string;
+  score: number;
+  note: string;
+};
+
+type StrengthProfile = {
+  summary: string;
+  phaseBreakdown: StrengthPhaseBreakdown[];
+  mistakeTypes: StrengthMistakeType[];
+  weakAreas: string[];
+  trainingPriorities: string[];
+  radarAxes: StrengthRadarAxis[];
+};
+
 const initialPgn = `[Event "Training Review"]
 [Site "Chess Me"]
 [Date "2026.05.14"]
@@ -987,6 +1014,130 @@ function buildEndgameTrainingPlan({
     summary: cards.length
       ? `识别到${type}，生成 ${cards.length} 张残局训练卡，优先检查：${cards[0].missedChance}。`
       : `识别到${type}，暂未发现明显残局错题；建议重点复盘王和兵的转换。`,
+  };
+}
+
+function getGamePhase(moveIndex: number): StrengthPhaseBreakdown['phase'] {
+  if (moveIndex < 8) {
+    return '开局';
+  }
+  if (moveIndex <= 40) {
+    return '中局';
+  }
+  return '残局';
+}
+
+function classifyStrengthMistakeType(analysis: GlobalMoveAnalysis): string {
+  const san = analysis.san;
+  if (
+    analysis.centipawnLoss >= 300 ||
+    (analysis.afterScore !== null && analysis.beforeScore !== null && Math.abs(analysis.afterScore - analysis.beforeScore) >= 180)
+  ) {
+    return '防守失败';
+  }
+  if (/x|[+#]/.test(san) || analysis.centipawnLoss >= 250) {
+    return '漏战术';
+  }
+  if (/^[a-h]|^[NBRQK]/.test(san)) {
+    return '计划错误';
+  }
+  return '时间压力';
+}
+
+function clampStrengthScore(score: number) {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function buildStrengthProfile({
+  analyses,
+  mistakeCards,
+  candidateStats,
+}: {
+  analyses: GlobalMoveAnalysis[];
+  mistakeCards: Array<Pick<MistakeCard, 'tags' | 'attempts' | 'solvedCount'>>;
+  candidateStats: CandidateTrainingStats;
+}): StrengthProfile {
+  const relevantAnalyses = analyses.filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint || analysis.centipawnLoss > 0);
+  const phaseMap = new Map<StrengthPhaseBreakdown['phase'], StrengthPhaseBreakdown>([
+    ['开局', { phase: '开局', mistakes: 0, totalLoss: 0 }],
+    ['中局', { phase: '中局', mistakes: 0, totalLoss: 0 }],
+    ['残局', { phase: '残局', mistakes: 0, totalLoss: 0 }],
+  ]);
+  const mistakeTypeMap = new Map<string, StrengthMistakeType>();
+
+  relevantAnalyses.forEach((analysis) => {
+    const phase = getGamePhase(analysis.moveIndex);
+    const phaseStat = phaseMap.get(phase)!;
+    phaseStat.mistakes += analysis.centipawnLoss > 0 ? 1 : 0;
+    phaseStat.totalLoss += analysis.centipawnLoss;
+
+    const type = classifyStrengthMistakeType(analysis);
+    const typeStat = mistakeTypeMap.get(type) ?? { type, count: 0, totalLoss: 0 };
+    typeStat.count += 1;
+    typeStat.totalLoss += analysis.centipawnLoss;
+    mistakeTypeMap.set(type, typeStat);
+  });
+
+  const phaseBreakdown = [...phaseMap.values()].sort((a, b) => b.totalLoss - a.totalLoss || b.mistakes - a.mistakes);
+  const mistakeTypes = [...mistakeTypeMap.values()].sort((a, b) => b.totalLoss - a.totalLoss || b.count - a.count);
+  const tagStats = buildTrainingStatsByTag(
+    mistakeCards.map((card, index) => ({
+      ...card,
+      id: `profile-${index}`,
+      fen: '',
+      positionLabel: '',
+      guessedSan: '',
+      actualSan: '',
+      stockfishBestSan: '',
+      pgnText: '',
+      reviewStage: 0,
+      dueAt: new Date(0).toISOString(),
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    })),
+  );
+  const weakestTag = tagStats.sort((a, b) => a.accuracy - b.accuracy || b.attempts - a.attempts)[0];
+  const topPhase = phaseBreakdown[0];
+  const topMistakeType = mistakeTypes[0];
+  const candidateCoverage = candidateStats.validSessions ? candidateStats.answerCovered / candidateStats.validSessions : 1;
+  const bestCoverage = candidateStats.validSessions ? candidateStats.bestCovered / candidateStats.validSessions : 1;
+  const sortingAccuracy = candidateStats.validSessions ? candidateStats.sortingScoreTotal / (candidateStats.validSessions * 100) : 1;
+  const openingLoss = phaseMap.get('开局')?.totalLoss ?? 0;
+  const middlegameLoss = phaseMap.get('中局')?.totalLoss ?? 0;
+  const endgameLoss = phaseMap.get('残局')?.totalLoss ?? 0;
+
+  const radarAxes: StrengthRadarAxis[] = [
+    { axis: '开局稳定性', score: clampStrengthScore(100 - openingLoss / 4), note: `开局累计失分 ${openingLoss} cp` },
+    { axis: '中局计划', score: clampStrengthScore(100 - middlegameLoss / 6), note: `中局累计失分 ${middlegameLoss} cp` },
+    { axis: '残局技术', score: clampStrengthScore(100 - endgameLoss / 5), note: `残局累计失分 ${endgameLoss} cp` },
+    { axis: '候选着覆盖', score: clampStrengthScore(candidateCoverage * 100), note: `实战答案覆盖 ${candidateStats.answerCovered}/${candidateStats.validSessions || 0}` },
+    { axis: '最佳着意识', score: clampStrengthScore(bestCoverage * 100), note: `引擎首选覆盖 ${candidateStats.bestCovered}/${candidateStats.validSessions || 0}` },
+    { axis: '排序执行力', score: clampStrengthScore(sortingAccuracy * 100), note: `平均排序 ${Math.round(sortingAccuracy * 100)} 分` },
+  ];
+
+  const weakAreas = [
+    topPhase && topPhase.totalLoss > 0 ? `${topPhase.phase}失分最高：${topPhase.totalLoss} cp / ${topPhase.mistakes} 次` : '',
+    topMistakeType ? `${topMistakeType.type}最突出：${topMistakeType.count} 次，损失 ${topMistakeType.totalLoss} cp` : '',
+    weakestTag ? `${weakestTag.tag}错题正确率偏低：${weakestTag.accuracy}%` : '',
+    candidateStats.answerInCandidatesButNotSelected > 0 ? `候选着能想到但未选择：${candidateStats.answerInCandidatesButNotSelected} 次` : '',
+  ].filter(Boolean);
+
+  const trainingPriorities = [
+    topPhase ? `优先做${topPhase.phase}专项：每盘挑 2 个高损失局面写候选计划。` : '',
+    topMistakeType ? `针对${topMistakeType.type}建立错题标签，复盘前先写防错清单。` : '',
+    weakestTag ? `复习错题标签「${weakestTag.tag}」，目标把正确率提升到 70% 以上。` : '',
+    candidateStats.validSessions ? '继续做 2-3 个候选着训练，要求先覆盖实战答案再排序。' : '',
+  ].filter(Boolean);
+
+  return {
+    summary: weakAreas.length
+      ? `首要短板：${weakAreas[0]}。下一步：${trainingPriorities[0] ?? '保持每盘复盘。'}`
+      : '暂无足够数据建立稳定棋力画像；建议先完成整盘分析和错题训练。',
+    phaseBreakdown,
+    mistakeTypes,
+    weakAreas,
+    trainingPriorities,
+    radarAxes,
   };
 }
 
@@ -1835,6 +1986,10 @@ function App() {
         endgamePlan: endgameTrainingPlan,
       }),
     [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch],
+  );
+  const strengthProfile = useMemo(
+    () => buildStrengthProfile({ analyses: globalAnalysis, mistakeCards, candidateStats }),
+    [candidateStats, globalAnalysis, mistakeCards],
   );
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
@@ -2746,6 +2901,8 @@ function App() {
 
           <ReviewReportPanel report={reviewReport} onCopy={copyReviewReport} onExport={exportReviewReport} />
 
+          <StrengthProfilePanel profile={strengthProfile} />
+
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
             isAnalyzing={isGlobalAnalyzing}
@@ -3573,6 +3730,63 @@ function EndgameTrainingPanel({
   );
 }
 
+function StrengthProfilePanel({ profile }: { profile: StrengthProfile }) {
+  return (
+    <section className="strength-profile-panel" aria-label="个人棋力画像">
+      <div className="strength-profile-header">
+        <span>个人棋力画像</span>
+        <strong>{profile.weakAreas.length || '待分析'}</strong>
+      </div>
+      <p>{profile.summary}</p>
+
+      <div className="strength-radar-grid">
+        {profile.radarAxes.map((axis) => (
+          <div className="strength-radar-axis" key={axis.axis}>
+            <div>
+              <span>{axis.axis}</span>
+              <strong>{axis.score}</strong>
+            </div>
+            <progress max="100" value={axis.score} />
+            <small>{axis.note}</small>
+          </div>
+        ))}
+      </div>
+
+      <div className="strength-profile-grid">
+        <div>
+          <strong>阶段失分</strong>
+          {profile.phaseBreakdown.map((phase) => (
+            <span key={phase.phase}>
+              {phase.phase}：{phase.totalLoss} cp / {phase.mistakes} 次
+            </span>
+          ))}
+        </div>
+        <div>
+          <strong>错误类型</strong>
+          {profile.mistakeTypes.length ? (
+            profile.mistakeTypes.slice(0, 4).map((item) => (
+              <span key={item.type}>
+                {item.type}：{item.count} 次 · {item.totalLoss} cp
+              </span>
+            ))
+          ) : (
+            <span>暂无错误类型数据</span>
+          )}
+        </div>
+      </div>
+
+      {profile.trainingPriorities.length > 0 && (
+        <div className="strength-priorities">
+          <strong>训练优先级</strong>
+          {profile.trainingPriorities.map((priority) => (
+            <span key={priority}>{priority}</span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ReviewReportPanel({
   report,
   onCopy,
@@ -3939,6 +4153,7 @@ export {
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
   buildReviewReport,
+  buildStrengthProfile,
   buildMiddlegamePlanTraining,
   getPgnReplyAfterCorrectGuess,
   classifyMoveFromEvaluationDrop,
