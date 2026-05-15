@@ -5,6 +5,7 @@ import {
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
+  buildReviewReport,
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
   classifyMoveFromEvaluationDrop,
@@ -149,6 +150,40 @@ describe('opening improvement helpers', () => {
       tags: ['开局'],
     });
     expect(plan.summary).toContain('开局分歧 1 个');
+  });
+});
+
+describe('review report helpers', () => {
+  it('builds a full game review report with phase summary, biggest mistake, training advice, and markdown export', () => {
+    const report = buildReviewReport({
+      opening: { eco: 'C60', name: 'Ruy Lopez', status: 'deviation', matchedPly: 5, deviationMove: 'h6', nextBookMove: 'a6' },
+      analyses: [
+        { moveIndex: 3, label: '2... Nc6', san: 'Nc6', quality: '好棋', centipawnLoss: 20, beforeScore: 10, afterScore: 5, isSwingPoint: false, bestMoveSan: 'Nc6' },
+        { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', quality: '败着', centipawnLoss: 420, beforeScore: 80, afterScore: -360, isSwingPoint: true, bestMoveSan: 'Re1' },
+        { moveIndex: 46, label: '24... Ke1', san: 'Ke1', quality: '失误', centipawnLoss: 180, beforeScore: 0, afterScore: 220, isSwingPoint: true, bestMoveSan: 'Kd1' },
+      ],
+      middlegamePlan: {
+        focusCards: [{
+          id: 'mid-16', moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', topic: '候选着法与风险控制', priority: 100,
+          recommendedPlan: '优先比较 Re1。', reason: '中局败着导致局势逆转。', tags: ['中局', '败着'],
+        }],
+        themeStats: [{ theme: '候选着法与风险控制', count: 1, totalLoss: 420 }],
+        summary: '发现 1 个关键中局计划点。',
+      },
+      endgamePlan: {
+        phase: 'endgame', type: '车残局',
+        cards: [{ id: 'end-46', moveIndex: 46, label: '24... Ke1', san: 'Ke1', endgameType: '车残局', missedChance: '错过守和机会', recommendedMove: 'Kd1', prompt: '复盘残局守和。', tags: ['残局', '车残局'] }],
+        themes: ['王的积极性'], summary: '识别到车残局。',
+      },
+    });
+
+    expect(report.summary).toContain('最大失误：9. Nxe5');
+    expect(report.sections.opening).toContain('Ruy Lopez');
+    expect(report.sections.middlegame).toContain('候选着法与风险控制');
+    expect(report.sections.endgame).toContain('车残局');
+    expect(report.biggestMistake).toMatchObject({ label: '9. Nxe5', centipawnLoss: 420 });
+    expect(report.trainingAdvice).toContain('优先训练候选着法与风险控制');
+    expect(report.markdown).toContain('## 下一次训练建议');
   });
 });
 

@@ -265,14 +265,14 @@ public/stockfish/
 
 ### G. 复盘报告
 
-- [ ] 自动生成整盘复盘摘要：
+- [x] 自动生成整盘复盘摘要：
   - 开局阶段表现
   - 中局关键转折
   - 残局准确性
   - 最大失误
   - 推荐训练主题
-- [ ] 生成“下一次训练建议”。
-- [ ] 导出为 Markdown。
+- [x] 生成“下一次训练建议”。
+- [x] 导出为 Markdown。
 - [ ] 支持保存历史报告。
 
 ### H. 个人棋力画像
@@ -319,6 +319,7 @@ npm test
 npm run build
 npm test -- --run src/App.test.ts -t "middlegame plan training"
 npm test -- --run src/App.test.ts -t "endgame training"
+npm test -- --run src/App.test.ts -t "review report"
 npm test -- --run src/App.test.ts -t "advances from the player guess"
 npm test -- --run src/App.test.ts -t "opening improvement"
 npm test -- --run src/App.test.ts -t "candidate move training"

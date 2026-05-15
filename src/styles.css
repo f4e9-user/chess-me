@@ -833,7 +833,8 @@ h2 {
 
 .opening-panel,
 .middlegame-plan-panel,
-.endgame-training-panel {
+.endgame-training-panel,
+.review-report-panel {
   display: grid;
   gap: 6px;
   width: min(100%, 720px);
@@ -846,7 +847,8 @@ h2 {
 
 .opening-header,
 .middlegame-plan-header,
-.endgame-training-header {
+.endgame-training-header,
+.review-report-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -855,7 +857,8 @@ h2 {
 
 .opening-header span,
 .middlegame-plan-header span,
-.endgame-training-header span {
+.endgame-training-header span,
+.review-report-header span {
   color: var(--accent-strong);
   font-size: 0.82rem;
   font-weight: 900;
@@ -863,7 +866,8 @@ h2 {
 
 .opening-header strong,
 .middlegame-plan-header strong,
-.endgame-training-header strong {
+.endgame-training-header strong,
+.review-training-advice strong {
   border: 1px solid rgba(34, 111, 84, 0.28);
   border-radius: 999px;
   background: #ffffff;
@@ -878,7 +882,8 @@ h2 {
 
 .opening-panel p,
 .middlegame-plan-panel p,
-.endgame-training-panel p {
+.endgame-training-panel p,
+.review-report-panel p {
   margin: 0;
   color: var(--ink-muted);
   line-height: 1.45;
@@ -992,6 +997,37 @@ h2 {
   border: 1px dashed rgba(34, 111, 84, 0.28);
   border-radius: 8px;
   padding: 10px;
+}
+
+.review-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.review-report-grid article,
+.review-training-advice {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(34, 111, 84, 0.14);
+  border-radius: 8px;
+  background: rgba(34, 111, 84, 0.06);
+  padding: 10px;
+}
+
+.review-report-grid article span {
+  color: #1d2520;
+  font-weight: 900;
+}
+
+.review-training-advice strong {
+  justify-self: start;
 }
 
 .notes-panel {
