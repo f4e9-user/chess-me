@@ -224,6 +224,28 @@ type MiddlegamePlanTraining = {
   summary: string;
 };
 
+type EndgameType = '车残局' | '后残局' | '轻子残局' | '兵残局' | '混合残局' | '非残局';
+
+type EndgameTrainingCard = {
+  id: string;
+  moveIndex: number;
+  label: string;
+  san: string;
+  endgameType: EndgameType;
+  missedChance: string;
+  recommendedMove: string;
+  prompt: string;
+  tags: string[];
+};
+
+type EndgameTrainingPlan = {
+  phase: 'endgame' | 'not-endgame';
+  type: EndgameType;
+  cards: EndgameTrainingCard[];
+  themes: string[];
+  summary: string;
+};
+
 const initialPgn = `[Event "Training Review"]
 [Site "Chess Me"]
 [Date "2026.05.14"]
@@ -840,6 +862,119 @@ function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): Middlegame
     : '暂未发现明显中局计划训练点；建议先运行整盘分析。';
 
   return { focusCards, themeStats, summary };
+}
+
+function countMajorAndMinorPieces(fen: string) {
+  const counts = { q: 0, r: 0, b: 0, n: 0, p: 0 } satisfies Record<Exclude<PieceSymbol, 'k'>, number>;
+  const game = new Chess(fen);
+
+  for (const row of game.board()) {
+    for (const piece of row) {
+      if (piece && piece.type !== 'k') {
+        counts[piece.type] += 1;
+      }
+    }
+  }
+
+  return counts;
+}
+
+function classifyEndgameType(fen: string): EndgameType {
+  const counts = countMajorAndMinorPieces(fen);
+  const nonKingPieces = counts.q + counts.r + counts.b + counts.n + counts.p;
+  const heavyAndMinorPieces = counts.q + counts.r + counts.b + counts.n;
+
+  if (nonKingPieces > 12 || counts.q > 1) {
+    return '非残局';
+  }
+
+  if (counts.q > 0) {
+    return '后残局';
+  }
+
+  if (counts.r > 0) {
+    return '车残局';
+  }
+
+  if (counts.b + counts.n > 0) {
+    return '轻子残局';
+  }
+
+  if (counts.p > 0 || heavyAndMinorPieces === 0) {
+    return '兵残局';
+  }
+
+  return '混合残局';
+}
+
+function classifyEndgameMissedChance(analysis: GlobalMoveAnalysis) {
+  if (analysis.beforeScore !== null && Math.abs(analysis.beforeScore) <= 80 && analysis.afterScore !== null && Math.abs(analysis.afterScore) >= 150) {
+    return '错过守和机会';
+  }
+
+  if (analysis.beforeScore !== null && analysis.afterScore !== null && Math.abs(analysis.beforeScore) >= 180 && Math.abs(analysis.afterScore) < 120) {
+    return '错过胜势转换';
+  }
+
+  return analysis.isSwingPoint ? '残局关键转折' : '残局技术失误';
+}
+
+function buildEndgameTrainingPlan({
+  positions,
+  analyses,
+}: {
+  positions: Array<Pick<ReplayPosition, 'fen' | 'label'>>;
+  analyses: GlobalMoveAnalysis[];
+}): EndgameTrainingPlan {
+  const endgameStartIndex = positions.findIndex((position) => classifyEndgameType(position.fen) !== '非残局');
+
+  if (endgameStartIndex < 0) {
+    return {
+      phase: 'not-endgame',
+      type: '非残局',
+      cards: [],
+      themes: [],
+      summary: '尚未进入残局；运行整盘分析后可继续观察后半盘。',
+    };
+  }
+
+  const type = positions
+    .slice(endgameStartIndex)
+    .map((position) => classifyEndgameType(position.fen))
+    .find((candidate) => candidate !== '非残局' && candidate !== '兵残局') ?? classifyEndgameType(positions[endgameStartIndex].fen);
+  const endgameAnalyses = analyses.filter((analysis) => analysis.moveIndex >= Math.max(0, endgameStartIndex - 1));
+  const cards = endgameAnalyses
+    .filter((analysis) => analysis.centipawnLoss >= 80 || analysis.isSwingPoint)
+    .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
+    .slice(0, 5)
+    .map((analysis) => ({
+      id: `endgame-${analysis.moveIndex}-${normalizeSan(analysis.san)}`,
+      moveIndex: analysis.moveIndex,
+      label: analysis.label,
+      san: analysis.san,
+      endgameType: type,
+      missedChance: classifyEndgameMissedChance(analysis),
+      recommendedMove: analysis.bestMoveSan,
+      prompt: `复盘 ${analysis.label}：实战 ${analysis.san}，优先找 ${analysis.bestMoveSan || '更稳妥的残局计划'}。`,
+      tags: ['残局', type],
+    }));
+
+  const themes = [
+    cards.some((card) => /^K|K/.test(card.san) || /^K|K/.test(card.recommendedMove)) ? '王的积极性' : '',
+    type === '兵残局' ? '通路兵与方形法则' : '',
+    type === '车残局' ? '车活跃与王位' : '',
+    cards.some((card) => card.missedChance.includes('守和')) ? '守和机会' : '',
+  ].filter(Boolean);
+
+  return {
+    phase: 'endgame',
+    type,
+    cards,
+    themes: [...new Set(themes)],
+    summary: cards.length
+      ? `识别到${type}，生成 ${cards.length} 张残局训练卡，优先检查：${cards[0].missedChance}。`
+      : `识别到${type}，暂未发现明显残局错题；建议重点复盘王和兵的转换。`,
+  };
 }
 
 function normalizeSan(san: string) {
@@ -1608,6 +1743,10 @@ function App() {
     [mode, result.moves],
   );
   const middlegamePlanTraining = useMemo(() => buildMiddlegamePlanTraining(globalAnalysis), [globalAnalysis]);
+  const endgameTrainingPlan = useMemo(
+    () => buildEndgameTrainingPlan({ positions: result.positions, analyses: globalAnalysis }),
+    [globalAnalysis, result.positions],
+  );
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
 
@@ -2500,6 +2639,8 @@ function App() {
 
           <MiddlegamePlanPanel plan={middlegamePlanTraining} onSelectMove={(index) => updatePositionIndex(index + 1)} />
 
+          <EndgameTrainingPanel plan={endgameTrainingPlan} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
             isAnalyzing={isGlobalAnalyzing}
@@ -3279,6 +3420,54 @@ function MiddlegamePlanPanel({
   );
 }
 
+function EndgameTrainingPanel({
+  plan,
+  onSelectMove,
+}: {
+  plan: EndgameTrainingPlan;
+  onSelectMove: (moveIndex: number) => void;
+}) {
+  return (
+    <section className="endgame-training-panel" aria-label="残局训练">
+      <div className="endgame-training-header">
+        <span>残局训练</span>
+        <strong>{plan.type}</strong>
+      </div>
+      <p>{plan.summary}</p>
+
+      {plan.themes.length > 0 && (
+        <div className="endgame-theme-list">
+          {plan.themes.map((theme) => (
+            <span key={theme}>{theme}</span>
+          ))}
+        </div>
+      )}
+
+      {plan.cards.length > 0 ? (
+        <div className="endgame-card-list">
+          {plan.cards.map((card) => (
+            <button
+              type="button"
+              className="endgame-training-card"
+              key={card.id}
+              onClick={() => onSelectMove(card.moveIndex)}
+            >
+              <span>
+                {card.label} · {card.missedChance}
+              </span>
+              <strong>{card.endgameType}</strong>
+              <p>{card.prompt}</p>
+              <small>训练标签：{card.tags.join(' / ')}</small>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="endgame-empty">运行“一键全局分析”后，会自动识别残局类型并生成残局错题。</p>
+      )}
+    </section>
+  );
+}
+
 function SavedVariationsPanel({
   variations,
   onDelete,
@@ -3588,6 +3777,7 @@ export {
   analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildDailyTrainingPlan,
+  buildEndgameTrainingPlan,
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
   buildMiddlegamePlanTraining,

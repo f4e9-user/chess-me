@@ -257,11 +257,11 @@ public/stockfish/
 
 ### F. 残局训练
 
-- [ ] 自动识别进入残局的局面。
-- [ ] 标记残局类型：车残局、后残局、轻子残局、兵残局。
-- [ ] 识别是否错过胜/和机会。
-- [ ] 生成残局错题。
-- [ ] 支持基础残局主题训练。
+- [x] 自动识别进入残局的局面。
+- [x] 标记残局类型：车残局、后残局、轻子残局、兵残局。
+- [x] 识别是否错过胜/和机会。
+- [x] 生成残局错题。
+- [x] 支持基础残局主题训练。
 
 ### G. 复盘报告
 
@@ -318,6 +318,7 @@ public/stockfish/
 npm test
 npm run build
 npm test -- --run src/App.test.ts -t "middlegame plan training"
+npm test -- --run src/App.test.ts -t "endgame training"
 npm test -- --run src/App.test.ts -t "advances from the player guess"
 npm test -- --run src/App.test.ts -t "opening improvement"
 npm test -- --run src/App.test.ts -t "candidate move training"
