@@ -8,6 +8,7 @@ import {
   buildMiddlegamePlanTraining,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
+  getPgnReplyAfterCorrectGuess,
   getSpacedReviewIntervalDays,
   identifyOpening,
   normalizeSan,
@@ -18,6 +19,39 @@ import {
 } from './App';
 
 describe('guess next move training helpers', () => {
+  it('advances from the player guess to the opponent pgn reply in one training turn', () => {
+    const reply = getPgnReplyAfterCorrectGuess({
+      guessedSan: 'e4',
+      moves: [
+        { san: 'e4' },
+        { san: 'c5' },
+        { san: 'Nf3' },
+      ],
+      currentIndex: 0,
+      maxIndex: 3,
+    });
+
+    expect(reply).toEqual({
+      isCorrectGuess: true,
+      playerTargetIndex: 1,
+      replyMoveSan: 'c5',
+      nextIndex: 2,
+      message: '猜对实战手 e4，电脑按棋谱回应 c5。',
+    });
+  });
+
+  it('does not auto-reply when the guessed move differs from the pgn move', () => {
+    const reply = getPgnReplyAfterCorrectGuess({
+      guessedSan: 'd4',
+      moves: [{ san: 'e4' }, { san: 'c5' }],
+      currentIndex: 0,
+      maxIndex: 2,
+    });
+
+    expect(reply).toMatchObject({ isCorrectGuess: false, nextIndex: 0 });
+    expect(reply.replyMoveSan).toBeUndefined();
+  });
+
   it('marks the guess correct when it matches the hidden game move and compares Stockfish best move', () => {
     const result = analyzeGuessMove({
       guessedSan: 'Nf3',

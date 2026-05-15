@@ -846,6 +846,59 @@ function normalizeSan(san: string) {
   return san.replace(/[+#?!]+/g, '');
 }
 
+type PgnReplyAfterGuess = {
+  isCorrectGuess: boolean;
+  playerTargetIndex: number;
+  nextIndex: number;
+  replyMoveSan?: string;
+  message: string;
+};
+
+function getPgnReplyAfterCorrectGuess({
+  guessedSan,
+  moves,
+  currentIndex,
+  maxIndex,
+}: {
+  guessedSan: string;
+  moves: Array<Pick<Move, 'san'>>;
+  currentIndex: number;
+  maxIndex: number;
+}): PgnReplyAfterGuess {
+  const actualMove = moves[currentIndex];
+  const playerTargetIndex = Math.min(currentIndex + 1, maxIndex);
+
+  if (!actualMove || normalizeSan(guessedSan) !== normalizeSan(actualMove.san)) {
+    return {
+      isCorrectGuess: false,
+      playerTargetIndex,
+      nextIndex: currentIndex,
+      message: actualMove
+        ? `未猜中实战手 ${actualMove.san}，保持当前题目复盘。`
+        : '当前没有可应答的棋谱下一手。',
+    };
+  }
+
+  const replyMove = moves[playerTargetIndex];
+  if (!replyMove) {
+    return {
+      isCorrectGuess: true,
+      playerTargetIndex,
+      nextIndex: playerTargetIndex,
+      message: `猜对实战手 ${actualMove.san}，棋谱已到末尾。`,
+    };
+  }
+
+  const nextIndex = Math.min(playerTargetIndex + 1, maxIndex);
+  return {
+    isCorrectGuess: true,
+    playerTargetIndex,
+    replyMoveSan: replyMove.san,
+    nextIndex,
+    message: `猜对实战手 ${actualMove.san}，电脑按棋谱回应 ${replyMove.san}。`,
+  };
+}
+
 function analyzeGuessMove({
   guessedSan,
   actualSan,
@@ -1493,6 +1546,7 @@ function App() {
   const [savedVariations, setSavedVariations] = useState<SavedVariation[]>([]);
   const [isGuessMode, setIsGuessMode] = useState(false);
   const [guessResult, setGuessResult] = useState<GuessMoveResult | null>(null);
+  const [pgnReplyMessage, setPgnReplyMessage] = useState('');
   const [guessStats, setGuessStats] = useState<GuessStats>(() =>
     typeof window === 'undefined' ? { correct: 0, wrong: 0 } : loadStoredGuessStats(),
   );
@@ -1853,6 +1907,7 @@ function App() {
   const toggleGuessMode = () => {
     setIsGuessMode((enabled) => !enabled);
     setGuessResult(null);
+    setPgnReplyMessage('');
     setVariationPositions([]);
     setVariationIndex(-1);
     setSelectedSquare(null);
@@ -1864,7 +1919,7 @@ function App() {
       return;
     }
 
-    const result = analyzeGuessMove({
+    const guessAnalysis = analyzeGuessMove({
       guessedSan: move.san,
       actualSan: nextOriginalMove.san,
       stockfishBestSan: analysis?.bestMoveSan ?? '',
@@ -1877,7 +1932,7 @@ function App() {
           stockfishBestSan: analysis?.bestMoveSan ?? '',
         })
       : null;
-    setGuessResult(result);
+    setGuessResult(guessAnalysis);
     if (candidateTrainingResult) {
       setCandidateResult(candidateTrainingResult);
       setCandidateStats((stats) => updateCandidateTrainingStats(stats, candidateTrainingResult));
@@ -1892,21 +1947,36 @@ function App() {
       ].slice(0, 20));
     }
     setGuessStats((stats) => ({
-      correct: stats.correct + (result.isCorrect ? 1 : 0),
-      wrong: stats.wrong + (result.isCorrect ? 0 : 1),
+      correct: stats.correct + (guessAnalysis.isCorrect ? 1 : 0),
+      wrong: stats.wrong + (guessAnalysis.isCorrect ? 0 : 1),
     }));
 
     const mistakeCard = buildMistakeCardFromGuess({
       baseFen: originalFen,
       positionLabel: nextOriginalMove ? formatMoveLabel(nextOriginalMove, safeIndex) : current?.label ?? '当前局面',
-      result,
+      result: guessAnalysis,
       pgnText: mode === 'pgn' ? text : '',
     });
     if (mistakeCard) {
       setMistakeCards((cards) => upsertMistakeCard(cards, mistakeCard));
     }
 
-    showToast({ type: result.isCorrect ? 'success' : 'error', text: result.summary });
+    const pgnReply = getPgnReplyAfterCorrectGuess({
+      guessedSan: move.san,
+      moves: result.moves,
+      currentIndex: safeIndex,
+      maxIndex,
+    });
+    if (pgnReply.isCorrectGuess) {
+      setPgnReplyMessage(pgnReply.message);
+      setPositionIndex(pgnReply.nextIndex);
+      setVariationPositions([]);
+      setVariationIndex(-1);
+    } else {
+      setPgnReplyMessage('');
+    }
+
+    showToast({ type: guessAnalysis.isCorrect ? 'success' : 'error', text: pgnReply.isCorrectGuess ? pgnReply.message : guessAnalysis.summary });
   };
 
   const nextGuessPosition = () => {
@@ -1916,6 +1986,7 @@ function App() {
 
     updatePositionIndex((index) => Math.min(index + 1, maxIndex));
     setGuessResult(null);
+    setPgnReplyMessage('');
     setCandidateResult(null);
     setCandidateInput('');
   };
@@ -1963,6 +2034,7 @@ function App() {
     setSelectedSquare(null);
     setPendingPromotion(null);
     setGuessResult(null);
+    setPgnReplyMessage('');
     setIsGuessMode(false);
     setMistakeCards((cards) => cards.map((item) => (item.id === card.id ? updateMistakeCardReview(item, true) : item)));
     showToast({ type: 'success', text: '已载入错题局面，本次复习记为完成并安排下次间隔复习。' });
@@ -2356,6 +2428,7 @@ function App() {
             nextMove={nextOriginalMove}
             shouldHideNextMove={shouldHideNextMove}
             result={guessResult}
+            pgnReplyMessage={pgnReplyMessage}
             stats={guessStats}
             candidateInput={candidateInput}
             candidateResult={candidateResult}
@@ -2838,6 +2911,7 @@ function GuessTrainingPanel({
   nextMove,
   shouldHideNextMove,
   result,
+  pgnReplyMessage,
   stats,
   candidateInput,
   candidateResult,
@@ -2854,6 +2928,7 @@ function GuessTrainingPanel({
   nextMove?: Move;
   shouldHideNextMove: boolean;
   result: GuessMoveResult | null;
+  pgnReplyMessage: string;
   stats: GuessStats;
   candidateInput: string;
   candidateResult: CandidateMoveTrainingResult | null;
@@ -2883,9 +2958,9 @@ function GuessTrainingPanel({
           <p>
             {isEnabled
               ? shouldHideNextMove
-                ? '已隐藏棋谱下一手，请先写 2-3 个候选着法，再在棋盘上做最终选择。'
+                ? '已隐藏棋谱下一手：你走对后，电脑会立刻按棋谱自动回应一手，形成连续人机对战训练。'
                 : '本局面暂无可隐藏的下一手。'
-              : '开启后会隐藏棋谱下一手，先由你在棋盘上猜。'}
+              : '开启后会隐藏棋谱下一手，你走一步，电脑按原棋谱走下一步。'}
           </p>
         </div>
         <button type="button" onClick={onToggle}>
@@ -2965,10 +3040,11 @@ function GuessTrainingPanel({
         <div className={`guess-result ${result.isCorrect ? 'correct' : 'wrong'}`}>
           <strong>{result.isCorrect ? '猜对了' : '未猜中'}</strong>
           <p>{result.summary}</p>
+          {pgnReplyMessage && <p className="pgn-reply-message">{pgnReplyMessage}</p>}
         </div>
       ) : (
         <p className="guess-hint">
-          {isEnabled && nextMove ? '下一手已遮挡；走完后会自动对比实战手、Stockfish 首选和你的候选清单。' : '可随时开启训练模式。'}
+          {isEnabled && nextMove ? '下一手已遮挡；你走对后，电脑按棋谱自动回应下一手，并把棋盘推进到你的下一回合。' : '可随时开启训练模式。'}
         </p>
       )}
 
@@ -3515,6 +3591,7 @@ export {
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
   buildMiddlegamePlanTraining,
+  getPgnReplyAfterCorrectGuess,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   getSpacedReviewIntervalDays,

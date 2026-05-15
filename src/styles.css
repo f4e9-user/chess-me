@@ -511,6 +511,13 @@ h2 {
   line-height: 1.45;
 }
 
+.pgn-reply-message {
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+  color: var(--accent-strong) !important;
+  font-weight: 800;
+}
+
 .guess-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

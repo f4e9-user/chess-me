@@ -58,11 +58,12 @@ Chess Me 是一个面向个人棋力提升的国际象棋复盘与训练工具�
    - 你的猜测
    - 实战手
    - Stockfish 首选
-5. 系统自动记录：
+5. 如果你猜对实战手，电脑会按照 PGN 棋谱自动走出对方下一手，并把棋盘推进到你的下一回合，形成连续人机对战训练。
+6. 系统自动记录：
    - 猜对次数
    - 猜错次数
    - 正确率
-6. 点击 **下一题** 进入后续局面继续训练。
+7. 点击 **下一题** 可跳过当前回合进入后续局面继续训练。
 
 这个模式的训练目的：
 
@@ -317,6 +318,7 @@ public/stockfish/
 npm test
 npm run build
 npm test -- --run src/App.test.ts -t "middlegame plan training"
+npm test -- --run src/App.test.ts -t "advances from the player guess"
 npm test -- --run src/App.test.ts -t "opening improvement"
 npm test -- --run src/App.test.ts -t "candidate move training"
 npm test -- --run src/App.test.ts -t "advances spaced review|resets review stage|builds a daily training plan"
