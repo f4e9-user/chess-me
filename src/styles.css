@@ -425,13 +425,23 @@ h2 {
 .global-analysis-list,
 .saved-variation-list,
 .training-loop-summary,
-.tag-stats {
+.tag-stats,
+.candidate-stats,
+.candidate-session-list {
   display: grid;
   gap: 8px;
 }
 
 .guess-stats {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.candidate-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.candidate-session-list {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 }
 
 .training-loop-summary {
@@ -454,6 +464,10 @@ h2 {
 
 .guess-stats div,
 .training-loop-summary div,
+.candidate-training-box,
+.candidate-stats div,
+.candidate-result,
+.candidate-session-list span,
 .guess-result,
 .swing-summary {
   border: 1px solid var(--border);
@@ -464,6 +478,7 @@ h2 {
 
 .guess-stats span,
 .training-loop-summary span,
+.candidate-stats span,
 .swing-summary span {
   display: block;
   color: var(--ink-muted);
@@ -472,7 +487,8 @@ h2 {
 }
 
 .guess-stats strong,
-.training-loop-summary strong {
+.training-loop-summary strong,
+.candidate-stats strong {
   display: block;
   margin-top: 4px;
   color: var(--accent-strong);
@@ -485,6 +501,8 @@ h2 {
 .mistake-card p,
 .mistake-card small,
 .global-analysis-header p,
+.candidate-training-header p,
+.candidate-result p,
 .guess-hint,
 .guess-result p,
 .swing-summary p {
@@ -499,8 +517,63 @@ h2 {
   gap: 8px;
 }
 
+.candidate-training-box {
+  display: grid;
+  gap: 10px;
+}
+
+.candidate-training-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.candidate-training-header span {
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.candidate-training-box textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfcfa;
+  color: #1d2520;
+}
+
+.candidate-training-box textarea:disabled {
+  color: #8a948d;
+}
+
+.candidate-result.valid {
+  border-color: rgba(34, 111, 84, 0.4);
+  background: #f0f8f3;
+}
+
+.candidate-result.invalid {
+  border-color: rgba(214, 145, 29, 0.45);
+  background: #fff8e8;
+}
+
+.candidate-result ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--ink-muted);
+}
+
+.candidate-session-list span {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .guess-header button,
 .guess-actions button,
+.candidate-training-header button,
 .mistake-book-header button,
 .mistake-card-actions button,
 .global-analysis-header button {

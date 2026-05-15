@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
@@ -7,6 +8,7 @@ import {
   detectSwingPoint,
   getSpacedReviewIntervalDays,
   normalizeSan,
+  parseCandidateMoveEntries,
   scoreToWhiteCentipawns,
   updateMistakeCardReview,
   upsertMistakeCard,
@@ -31,6 +33,50 @@ describe('guess next move training helpers', () => {
     expect(
       analyzeGuessMove({ guessedSan: 'Qh5+', actualSan: 'Qh5', stockfishBestSan: 'Qh5#' }),
     ).toMatchObject({ isCorrect: true, matchesStockfish: true });
+  });
+});
+
+describe('candidate move training helpers', () => {
+  it('parses 2-3 candidate moves with reasons from multiline input', () => {
+    const entries = parseCandidateMoveEntries('Nf3 - 发展并控制中心\nBc4：瞄准 f7\n d4  争夺中心');
+
+    expect(entries).toEqual([
+      { moveSan: 'Nf3', reason: '发展并控制中心' },
+      { moveSan: 'Bc4', reason: '瞄准 f7' },
+      { moveSan: 'd4', reason: '争夺中心' },
+    ]);
+  });
+
+  it('evaluates candidate coverage, selected move, and answer-in-candidates misses', () => {
+    const result = analyzeCandidateMoveTraining({
+      rawCandidates: 'Nf3 - 发展\nBc4 - 攻击 f7\nd4 - 抢中心',
+      selectedSan: 'Bc4',
+      actualSan: 'Nf3',
+      stockfishBestSan: 'Nf3',
+    });
+
+    expect(result).toMatchObject({
+      candidateCount: 3,
+      hasActualInCandidates: true,
+      hasBestInCandidates: true,
+      selectedIsActual: false,
+      selectedIsBest: false,
+      answerInCandidatesButNotSelected: true,
+      sortingScore: 67,
+    });
+    expect(result.summary).toContain('答案在候选里，但最终没选中');
+  });
+
+  it('requires at least two candidate moves before scoring', () => {
+    const result = analyzeCandidateMoveTraining({
+      rawCandidates: 'Nf3 - 发展',
+      selectedSan: 'Nf3',
+      actualSan: 'Nf3',
+      stockfishBestSan: 'Nf3',
+    });
+
+    expect(result.isValid).toBe(false);
+    expect(result.validationMessage).toContain('至少写出 2 个候选着法');
   });
 });
 

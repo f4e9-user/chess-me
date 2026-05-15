@@ -85,6 +85,44 @@ type GuessStats = {
   wrong: number;
 };
 
+type CandidateMoveEntry = {
+  moveSan: string;
+  reason: string;
+};
+
+type CandidateMoveTrainingResult = {
+  entries: CandidateMoveEntry[];
+  candidateCount: number;
+  isValid: boolean;
+  validationMessage: string;
+  selectedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+  hasActualInCandidates: boolean;
+  hasBestInCandidates: boolean;
+  selectedIsActual: boolean;
+  selectedIsBest: boolean;
+  answerInCandidatesButNotSelected: boolean;
+  sortingScore: number;
+  summary: string;
+};
+
+type CandidateTrainingStats = {
+  sessions: number;
+  validSessions: number;
+  answerCovered: number;
+  bestCovered: number;
+  answerInCandidatesButNotSelected: number;
+  sortingScoreTotal: number;
+};
+
+type CandidateTrainingSession = {
+  id: string;
+  positionLabel: string;
+  result: CandidateMoveTrainingResult;
+  createdAt: string;
+};
+
 type MistakeCard = {
   id: string;
   fen: string;
@@ -156,6 +194,8 @@ const globalAnalysisDepth = 10;
 const swingPointThreshold = 150;
 const guessStatsStorageKey = 'chess-me:guess-stats:v1';
 const mistakeBookStorageKey = 'chess-me:mistake-book:v1';
+const candidateTrainingStatsStorageKey = 'chess-me:candidate-training-stats:v1';
+const candidateTrainingSessionsStorageKey = 'chess-me:candidate-training-sessions:v1';
 
 const openingBook: OpeningEntry[] = [
   { eco: 'A00', name: '初始局面', moves: [] },
@@ -656,6 +696,78 @@ function analyzeGuessMove({
   };
 }
 
+function parseCandidateMoveEntries(rawCandidates: string): CandidateMoveEntry[] {
+  return rawCandidates
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((line) => {
+      const [moveSan = '', ...reasonParts] = line.split(/\s*(?:-|：|:)\s*|\s{2,}/);
+      return {
+        moveSan: moveSan.trim(),
+        reason: reasonParts.join(' ').trim(),
+      };
+    })
+    .filter((entry) => entry.moveSan.length > 0);
+}
+
+function analyzeCandidateMoveTraining({
+  rawCandidates,
+  selectedSan,
+  actualSan,
+  stockfishBestSan,
+}: {
+  rawCandidates: string;
+  selectedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+}): CandidateMoveTrainingResult {
+  const entries = parseCandidateMoveEntries(rawCandidates);
+  const candidateCount = entries.length;
+  const normalizedCandidates = entries.map((entry) => normalizeSan(entry.moveSan));
+  const normalizedSelected = normalizeSan(selectedSan);
+  const normalizedActual = normalizeSan(actualSan);
+  const normalizedBest = normalizeSan(stockfishBestSan);
+  const isValid = candidateCount >= 2;
+  const hasActualInCandidates = normalizedCandidates.includes(normalizedActual);
+  const hasBestInCandidates = Boolean(stockfishBestSan) && normalizedCandidates.includes(normalizedBest);
+  const selectedIsActual = normalizedSelected === normalizedActual;
+  const selectedIsBest = Boolean(stockfishBestSan) && normalizedSelected === normalizedBest;
+  const answerInCandidatesButNotSelected = hasActualInCandidates && !selectedIsActual;
+  const sortingScore = Math.round(
+    ((hasActualInCandidates ? 1 : 0) + (hasBestInCandidates ? 1 : 0) + (selectedIsActual || selectedIsBest ? 1 : 0)) *
+      (100 / 3),
+  );
+  const validationMessage = isValid ? '' : '至少写出 2 个候选着法，并为每个候选写一句理由。';
+  const summary = isValid
+    ? [
+        `候选 ${candidateCount} 个`,
+        hasActualInCandidates ? '实战答案进入候选' : '实战答案未进入候选',
+        stockfishBestSan ? (hasBestInCandidates ? '引擎首选进入候选' : '引擎首选未进入候选') : '暂未分析引擎首选',
+        answerInCandidatesButNotSelected ? '答案在候选里，但最终没选中' : '最终选择与候选排序一致性可复盘',
+        `排序得分 ${sortingScore}`,
+      ].join(' · ')
+    : validationMessage;
+
+  return {
+    entries,
+    candidateCount,
+    isValid,
+    validationMessage,
+    selectedSan,
+    actualSan,
+    stockfishBestSan,
+    hasActualInCandidates,
+    hasBestInCandidates,
+    selectedIsActual,
+    selectedIsBest,
+    answerInCandidatesButNotSelected,
+    sortingScore,
+    summary,
+  };
+}
+
 function buildMistakeCardFromGuess({
   baseFen,
   positionLabel,
@@ -866,6 +978,75 @@ function loadStoredMistakeCards(): MistakeCard[] {
 
 function saveStoredMistakeCards(cards: MistakeCard[]) {
   window.localStorage.setItem(mistakeBookStorageKey, JSON.stringify(cards));
+}
+
+function getInitialCandidateTrainingStats(): CandidateTrainingStats {
+  return {
+    sessions: 0,
+    validSessions: 0,
+    answerCovered: 0,
+    bestCovered: 0,
+    answerInCandidatesButNotSelected: 0,
+    sortingScoreTotal: 0,
+  };
+}
+
+function loadStoredCandidateTrainingStats(): CandidateTrainingStats {
+  try {
+    const rawStats = window.localStorage.getItem(candidateTrainingStatsStorageKey);
+    if (!rawStats) {
+      return getInitialCandidateTrainingStats();
+    }
+
+    const parsed = JSON.parse(rawStats) as Partial<CandidateTrainingStats>;
+    return {
+      sessions: Number(parsed.sessions) || 0,
+      validSessions: Number(parsed.validSessions) || 0,
+      answerCovered: Number(parsed.answerCovered) || 0,
+      bestCovered: Number(parsed.bestCovered) || 0,
+      answerInCandidatesButNotSelected: Number(parsed.answerInCandidatesButNotSelected) || 0,
+      sortingScoreTotal: Number(parsed.sortingScoreTotal) || 0,
+    };
+  } catch {
+    return getInitialCandidateTrainingStats();
+  }
+}
+
+function saveStoredCandidateTrainingStats(stats: CandidateTrainingStats) {
+  window.localStorage.setItem(candidateTrainingStatsStorageKey, JSON.stringify(stats));
+}
+
+function loadStoredCandidateTrainingSessions(): CandidateTrainingSession[] {
+  try {
+    const rawSessions = window.localStorage.getItem(candidateTrainingSessionsStorageKey);
+    if (!rawSessions) {
+      return [];
+    }
+
+    const parsed = JSON.parse(rawSessions) as CandidateTrainingSession[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredCandidateTrainingSessions(sessions: CandidateTrainingSession[]) {
+  window.localStorage.setItem(candidateTrainingSessionsStorageKey, JSON.stringify(sessions));
+}
+
+function updateCandidateTrainingStats(
+  stats: CandidateTrainingStats,
+  result: CandidateMoveTrainingResult,
+): CandidateTrainingStats {
+  return {
+    sessions: stats.sessions + 1,
+    validSessions: stats.validSessions + (result.isValid ? 1 : 0),
+    answerCovered: stats.answerCovered + (result.hasActualInCandidates ? 1 : 0),
+    bestCovered: stats.bestCovered + (result.hasBestInCandidates ? 1 : 0),
+    answerInCandidatesButNotSelected:
+      stats.answerInCandidatesButNotSelected + (result.answerInCandidatesButNotSelected ? 1 : 0),
+    sortingScoreTotal: stats.sortingScoreTotal + (result.isValid ? result.sortingScore : 0),
+  };
 }
 
 function getTrainingExplanation({
@@ -1139,6 +1320,14 @@ function App() {
   const [mistakeCards, setMistakeCards] = useState<MistakeCard[]>(() =>
     typeof window === 'undefined' ? [] : loadStoredMistakeCards(),
   );
+  const [candidateInput, setCandidateInput] = useState('');
+  const [candidateResult, setCandidateResult] = useState<CandidateMoveTrainingResult | null>(null);
+  const [candidateStats, setCandidateStats] = useState<CandidateTrainingStats>(() =>
+    typeof window === 'undefined' ? getInitialCandidateTrainingStats() : loadStoredCandidateTrainingStats(),
+  );
+  const [candidateSessions, setCandidateSessions] = useState<CandidateTrainingSession[]>(() =>
+    typeof window === 'undefined' ? [] : loadStoredCandidateTrainingSessions(),
+  );
   const [globalAnalysis, setGlobalAnalysis] = useState<GlobalMoveAnalysis[]>([]);
   const [isGlobalAnalyzing, setIsGlobalAnalyzing] = useState(false);
   const [globalAnalysisProgress, setGlobalAnalysisProgress] = useState('');
@@ -1224,6 +1413,14 @@ function App() {
   useEffect(() => {
     saveStoredMistakeCards(mistakeCards);
   }, [mistakeCards]);
+
+  useEffect(() => {
+    saveStoredCandidateTrainingStats(candidateStats);
+  }, [candidateStats]);
+
+  useEffect(() => {
+    saveStoredCandidateTrainingSessions(candidateSessions);
+  }, [candidateSessions]);
 
   useEffect(() => {
     return () => {
@@ -1488,7 +1685,28 @@ function App() {
       actualSan: nextOriginalMove.san,
       stockfishBestSan: analysis?.bestMoveSan ?? '',
     });
+    const candidateTrainingResult = candidateInput.trim()
+      ? analyzeCandidateMoveTraining({
+          rawCandidates: candidateInput,
+          selectedSan: move.san,
+          actualSan: nextOriginalMove.san,
+          stockfishBestSan: analysis?.bestMoveSan ?? '',
+        })
+      : null;
     setGuessResult(result);
+    if (candidateTrainingResult) {
+      setCandidateResult(candidateTrainingResult);
+      setCandidateStats((stats) => updateCandidateTrainingStats(stats, candidateTrainingResult));
+      setCandidateSessions((sessions) => [
+        {
+          id: `${Date.now()}:${originalFen}`,
+          positionLabel: nextOriginalMove ? formatMoveLabel(nextOriginalMove, safeIndex) : current?.label ?? '当前局面',
+          result: candidateTrainingResult,
+          createdAt: new Date().toISOString(),
+        },
+        ...sessions,
+      ].slice(0, 20));
+    }
     setGuessStats((stats) => ({
       correct: stats.correct + (result.isCorrect ? 1 : 0),
       wrong: stats.wrong + (result.isCorrect ? 0 : 1),
@@ -1514,10 +1732,19 @@ function App() {
 
     updatePositionIndex((index) => Math.min(index + 1, maxIndex));
     setGuessResult(null);
+    setCandidateResult(null);
+    setCandidateInput('');
   };
 
   const resetGuessStats = () => {
     setGuessStats({ correct: 0, wrong: 0 });
+  };
+
+  const resetCandidateTraining = () => {
+    setCandidateInput('');
+    setCandidateResult(null);
+    setCandidateStats(getInitialCandidateTrainingStats());
+    setCandidateSessions([]);
   };
 
   const addCurrentPositionToMistakeBook = () => {
@@ -1946,10 +2173,16 @@ function App() {
             shouldHideNextMove={shouldHideNextMove}
             result={guessResult}
             stats={guessStats}
+            candidateInput={candidateInput}
+            candidateResult={candidateResult}
+            candidateStats={candidateStats}
+            candidateSessions={candidateSessions}
+            onCandidateInputChange={setCandidateInput}
             onToggle={toggleGuessMode}
             onAnalyze={analyzeCurrentPosition}
             onNext={nextGuessPosition}
             onResetStats={resetGuessStats}
+            onResetCandidateTraining={resetCandidateTraining}
           />
 
           <MistakeBookPanel
@@ -2420,23 +2653,41 @@ function GuessTrainingPanel({
   shouldHideNextMove,
   result,
   stats,
+  candidateInput,
+  candidateResult,
+  candidateStats,
+  candidateSessions,
+  onCandidateInputChange,
   onToggle,
   onAnalyze,
   onNext,
   onResetStats,
+  onResetCandidateTraining,
 }: {
   isEnabled: boolean;
   nextMove?: Move;
   shouldHideNextMove: boolean;
   result: GuessMoveResult | null;
   stats: GuessStats;
+  candidateInput: string;
+  candidateResult: CandidateMoveTrainingResult | null;
+  candidateStats: CandidateTrainingStats;
+  candidateSessions: CandidateTrainingSession[];
+  onCandidateInputChange: (value: string) => void;
   onToggle: () => void;
   onAnalyze: () => void;
   onNext: () => void;
   onResetStats: () => void;
+  onResetCandidateTraining: () => void;
 }) {
   const total = stats.correct + stats.wrong;
   const accuracy = total ? Math.round((stats.correct / total) * 100) : 0;
+  const candidateCoverage = candidateStats.validSessions
+    ? Math.round((candidateStats.answerCovered / candidateStats.validSessions) * 100)
+    : 0;
+  const candidateAverageScore = candidateStats.validSessions
+    ? Math.round(candidateStats.sortingScoreTotal / candidateStats.validSessions)
+    : 0;
 
   return (
     <section className="guess-panel" aria-label="猜下一手训练">
@@ -2446,7 +2697,7 @@ function GuessTrainingPanel({
           <p>
             {isEnabled
               ? shouldHideNextMove
-                ? '已隐藏棋谱下一手，请直接在棋盘上先走。'
+                ? '已隐藏棋谱下一手，请先写 2-3 个候选着法，再在棋盘上做最终选择。'
                 : '本局面暂无可隐藏的下一手。'
               : '开启后会隐藏棋谱下一手，先由你在棋盘上猜。'}
           </p>
@@ -2471,6 +2722,59 @@ function GuessTrainingPanel({
         </div>
       </div>
 
+      <div className="candidate-training-box">
+        <div className="candidate-training-header">
+          <div>
+            <span>候选着法训练</span>
+            <p>每行一个候选：例如 Nf3 - 发展并控制中心。提交最终走法后统计覆盖率和排序能力。</p>
+          </div>
+          <button type="button" onClick={onResetCandidateTraining} disabled={candidateStats.sessions === 0 && !candidateInput}>
+            清空候选记录
+          </button>
+        </div>
+        <textarea
+          value={candidateInput}
+          onChange={(event) => onCandidateInputChange(event.target.value)}
+          disabled={!isEnabled || Boolean(result)}
+          rows={4}
+          placeholder="Nf3 - 发展王翼并控制中心&#10;Bc4 - 盯住 f7&#10;d4 - 抢中心空间"
+        />
+        <div className="candidate-stats">
+          <div>
+            <span>有效训练</span>
+            <strong>{candidateStats.validSessions}</strong>
+          </div>
+          <div>
+            <span>答案覆盖率</span>
+            <strong>{candidateCoverage}%</strong>
+          </div>
+          <div>
+            <span>平均排序分</span>
+            <strong>{candidateAverageScore}</strong>
+          </div>
+          <div>
+            <span>有答案未选</span>
+            <strong>{candidateStats.answerInCandidatesButNotSelected}</strong>
+          </div>
+        </div>
+      </div>
+
+      {candidateResult && (
+        <div className={`candidate-result ${candidateResult.isValid ? 'valid' : 'invalid'}`}>
+          <strong>{candidateResult.isValid ? '候选复盘结果' : '候选输入不足'}</strong>
+          <p>{candidateResult.summary}</p>
+          {candidateResult.entries.length > 0 && (
+            <ul>
+              {candidateResult.entries.map((entry) => (
+                <li key={`${entry.moveSan}-${entry.reason}`}>
+                  {entry.moveSan}：{entry.reason || '未填写理由'}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {result ? (
         <div className={`guess-result ${result.isCorrect ? 'correct' : 'wrong'}`}>
           <strong>{result.isCorrect ? '猜对了' : '未猜中'}</strong>
@@ -2478,8 +2782,18 @@ function GuessTrainingPanel({
         </div>
       ) : (
         <p className="guess-hint">
-          {isEnabled && nextMove ? '下一手已遮挡；走完后会自动对比实战手和 Stockfish 首选。' : '可随时开启训练模式。'}
+          {isEnabled && nextMove ? '下一手已遮挡；走完后会自动对比实战手、Stockfish 首选和你的候选清单。' : '可随时开启训练模式。'}
         </p>
+      )}
+
+      {candidateSessions.length > 0 && (
+        <div className="candidate-session-list">
+          {candidateSessions.slice(0, 3).map((session) => (
+            <span key={session.id}>
+              {session.positionLabel}：{session.result.sortingScore} 分
+            </span>
+          ))}
+        </div>
       )}
 
       <div className="guess-actions">
@@ -2920,6 +3234,7 @@ function VariationMoveList({
 
 export {
   App,
+  analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
@@ -2927,6 +3242,7 @@ export {
   detectSwingPoint,
   getSpacedReviewIntervalDays,
   normalizeSan,
+  parseCandidateMoveEntries,
   scoreToWhiteCentipawns,
   updateMistakeCardReview,
   upsertMistakeCard,
