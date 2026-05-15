@@ -1219,6 +1219,27 @@ h2 {
   overflow: auto;
 }
 
+.bulk-pgn-insights {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: #edf7f1;
+  padding: 10px;
+  color: var(--accent-strong);
+  font-size: 0.86rem;
+}
+
+.bulk-pgn-insights span {
+  color: var(--ink-muted);
+}
+
+.bulk-pgn-insights ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #2d4638;
+}
+
 .bulk-pgn-card {
   display: grid;
   gap: 3px;
