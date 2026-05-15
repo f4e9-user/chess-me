@@ -7,6 +7,7 @@ import {
   buildOpeningImprovementPlan,
   buildReviewReport,
   buildStrengthProfile,
+  parseBulkPgnLibrary,
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
   classifyMoveFromEvaluationDrop,
@@ -151,6 +152,30 @@ describe('opening improvement helpers', () => {
       tags: ['开局'],
     });
     expect(plan.summary).toContain('开局分歧 1 个');
+  });
+});
+
+describe('bulk PGN import helpers', () => {
+  it('splits multiple PGN games, extracts headers, validates moves, and reports invalid entries', () => {
+    const library = parseBulkPgnLibrary([
+      {
+        filename: 'batch-a.pgn',
+        content: `[Event "Training A"]\n[White "Me"]\n[Black "Opponent"]\n[Result "1-0"]\n\n1. e4 e5 2. Nf3 Nc6 1-0\n\n[Event "Training B"]\n[White "Me"]\n[Black "Opponent"]\n[Result "0-1"]\n\n1. d4 d5 2. c4 e6 0-1`,
+      },
+      {
+        filename: 'broken.pgn',
+        content: `[Event "Broken"]\n[White "Me"]\n[Black "Opponent"]\n[Result "*"]\n\n1. e4 illegal *`,
+      },
+    ]);
+
+    expect(library.games).toHaveLength(2);
+    expect(library.games[0]).toMatchObject({ event: 'Training A', white: 'Me', black: 'Opponent', result: '1-0', moveCount: 4, filename: 'batch-a.pgn' });
+    expect(library.games[1]).toMatchObject({ event: 'Training B', result: '0-1', moveCount: 4 });
+    expect(library.errors).toEqual([
+      expect.objectContaining({ filename: 'broken.pgn', event: 'Broken' }),
+    ]);
+    expect(library.summary).toContain('导入 2 盘');
+    expect(library.summary).toContain('失败 1 盘');
   });
 });
 
