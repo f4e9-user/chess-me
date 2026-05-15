@@ -7,6 +7,7 @@ import {
   buildOpeningImprovementPlan,
   buildReviewReport,
   buildStrengthProfile,
+  buildBulkPgnLibraryInsights,
   parseBulkPgnLibrary,
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
@@ -176,6 +177,31 @@ describe('bulk PGN import helpers', () => {
     ]);
     expect(library.summary).toContain('导入 2 盘');
     expect(library.summary).toContain('失败 1 盘');
+  });
+
+  it('summarizes imported games by opening, result, and training priority', () => {
+    const library = parseBulkPgnLibrary([
+      {
+        filename: 'white-wins.pgn',
+        content: `[Event "Italian Win"]\n[White "Me"]\n[Black "A"]\n[Result "1-0"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 1-0`,
+      },
+      {
+        filename: 'black-wins.pgn',
+        content: `[Event "Sicilian Loss"]\n[White "B"]\n[Black "Me"]\n[Result "0-1"]\n\n1. e4 c5 2. Nf3 d6 0-1`,
+      },
+      {
+        filename: 'draw.pgn',
+        content: `[Event "Queen Pawn Draw"]\n[White "Me"]\n[Black "C"]\n[Result "1/2-1/2"]\n\n1. d4 d5 2. c4 e6 1/2-1/2`,
+      },
+    ]);
+
+    const insights = buildBulkPgnLibraryInsights(library.games);
+
+    expect(insights.totalGames).toBe(3);
+    expect(insights.results).toEqual({ whiteWins: 1, blackWins: 1, draws: 1, ongoing: 0 });
+    expect(insights.openings[0]).toMatchObject({ name: 'Italian Game: Giuoco Piano', games: 1 });
+    expect(insights.trainingPriorities[0]).toContain('Italian Game: Giuoco Piano');
+    expect(insights.summary).toContain('共 3 盘');
   });
 });
 

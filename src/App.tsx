@@ -59,6 +59,19 @@ type BulkPgnLibrary = {
   summary: string;
 };
 
+type BulkPgnLibraryInsights = {
+  totalGames: number;
+  results: {
+    whiteWins: number;
+    blackWins: number;
+    draws: number;
+    ongoing: number;
+  };
+  openings: OpeningStat[];
+  trainingPriorities: string[];
+  summary: string;
+};
+
 type PgnComment = {
   fen: string;
   comment: string;
@@ -473,6 +486,58 @@ function parseBulkPgnLibrary(files: BulkPgnFileInput[]): BulkPgnLibrary {
     games,
     errors,
     summary: `导入 ${games.length} 盘${errors.length > 0 ? `，失败 ${errors.length} 盘` : ''}`,
+  };
+}
+
+function buildBulkPgnLibraryInsights(games: BulkPgnGameSummary[]): BulkPgnLibraryInsights {
+  const results = { whiteWins: 0, blackWins: 0, draws: 0, ongoing: 0 };
+  const openingMap = new Map<string, OpeningStat>();
+
+  games.forEach((game) => {
+    if (game.result === '1-0') {
+      results.whiteWins += 1;
+    } else if (game.result === '0-1') {
+      results.blackWins += 1;
+    } else if (game.result === '1/2-1/2') {
+      results.draws += 1;
+    } else {
+      results.ongoing += 1;
+    }
+
+    const parsed = parsePgn(game.content);
+    const opening = identifyOpening(parsed.moves.map((move) => move.san));
+    const key = `${opening.eco}-${opening.name}`;
+    const current = openingMap.get(key) ?? {
+      eco: opening.eco,
+      name: opening.name,
+      games: 0,
+      deviations: 0,
+      deviationRate: 0,
+    };
+
+    current.games += 1;
+    if (opening.status === 'deviation') {
+      current.deviations += 1;
+    }
+    openingMap.set(key, current);
+  });
+
+  const openings = Array.from(openingMap.values())
+    .map((opening) => ({
+      ...opening,
+      deviationRate: opening.games === 0 ? 0 : Math.round((opening.deviations / opening.games) * 100),
+    }))
+    .sort((a, b) => b.games - a.games || b.deviations - a.deviations);
+  const trainingPriorities = openings.slice(0, 3).map((opening) =>
+    `${opening.name}：${opening.games} 盘${opening.deviations > 0 ? `，${opening.deviations} 次偏离棋谱` : ''}`,
+  );
+
+  return {
+    totalGames: games.length,
+    results,
+    openings,
+    trainingPriorities,
+    summary: `共 ${games.length} 盘，白胜 ${results.whiteWins}、黑胜 ${results.blackWins}、和棋 ${results.draws}`,
   };
 }
 
@@ -2079,6 +2144,10 @@ function App() {
       }),
     [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch],
   );
+  const bulkPgnLibraryInsights = useMemo(
+    () => (bulkPgnLibrary ? buildBulkPgnLibraryInsights(bulkPgnLibrary.games) : null),
+    [bulkPgnLibrary],
+  );
   const strengthProfile = useMemo(
     () => buildStrengthProfile({ analyses: globalAnalysis, mistakeCards, candidateStats }),
     [candidateStats, globalAnalysis, mistakeCards],
@@ -3041,7 +3110,12 @@ function App() {
           />
 
           {bulkPgnLibrary && (
-            <BulkPgnLibraryPanel library={bulkPgnLibrary} activeContent={text} onSelectGame={loadBulkPgnGame} />
+            <BulkPgnLibraryPanel
+              library={bulkPgnLibrary}
+              insights={bulkPgnLibraryInsights}
+              activeContent={text}
+              onSelectGame={loadBulkPgnGame}
+            />
           )}
 
           <div className="mode-switch" role="tablist" aria-label="棋谱格式">
@@ -3158,10 +3232,12 @@ function ImportExportTools({
 
 function BulkPgnLibraryPanel({
   library,
+  insights,
   activeContent,
   onSelectGame,
 }: {
   library: BulkPgnLibrary;
+  insights: BulkPgnLibraryInsights | null;
   activeContent: string;
   onSelectGame: (game: BulkPgnGameSummary) => void;
 }) {
@@ -3173,6 +3249,19 @@ function BulkPgnLibraryPanel({
           <p>{library.summary}</p>
         </div>
       </div>
+      {insights && (
+        <div className="bulk-pgn-insights">
+          <strong>{insights.summary}</strong>
+          <span>白胜 {insights.results.whiteWins} · 黑胜 {insights.results.blackWins} · 和棋 {insights.results.draws}</span>
+          {insights.trainingPriorities.length > 0 && (
+            <ul>
+              {insights.trainingPriorities.map((priority) => (
+                <li key={priority}>{priority}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <div className="bulk-pgn-list">
         {library.games.map((game) => (
           <button
@@ -4312,6 +4401,7 @@ export {
   buildOpeningImprovementPlan,
   buildReviewReport,
   buildStrengthProfile,
+  buildBulkPgnLibraryInsights,
   buildMiddlegamePlanTraining,
   getPgnReplyAfterCorrectGuess,
   classifyMoveFromEvaluationDrop,
