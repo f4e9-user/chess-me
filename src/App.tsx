@@ -31,6 +31,34 @@ type ParseResult = {
   source: ReplayMode;
 };
 
+type BulkPgnFileInput = {
+  filename: string;
+  content: string;
+};
+
+type BulkPgnGameSummary = {
+  id: string;
+  filename: string;
+  event: string;
+  white: string;
+  black: string;
+  result: string;
+  moveCount: number;
+  content: string;
+};
+
+type BulkPgnImportError = {
+  filename: string;
+  event: string;
+  message: string;
+};
+
+type BulkPgnLibrary = {
+  games: BulkPgnGameSummary[];
+  errors: BulkPgnImportError[];
+  summary: string;
+};
+
 type PgnComment = {
   fen: string;
   comment: string;
@@ -384,6 +412,69 @@ const pieceNames: Record<PieceSymbol, string> = {
   q: '后',
   k: '王',
 };
+
+function splitPgnGames(content: string) {
+  const trimmed = content.trim();
+
+  if (!trimmed) {
+    return [];
+  }
+
+  return trimmed
+    .split(/\n\s*\n(?=\s*\[Event\s+")/g)
+    .map((game) => game.trim())
+    .filter(Boolean);
+}
+
+function getPgnHeader(content: string, key: string) {
+  const match = content.match(new RegExp(`\\[${key}\\s+"([^"]*)"\\]`));
+  return match?.[1]?.trim() || '未知';
+}
+
+function parseBulkPgnLibrary(files: BulkPgnFileInput[]): BulkPgnLibrary {
+  const games: BulkPgnGameSummary[] = [];
+  const errors: BulkPgnImportError[] = [];
+
+  files.forEach((file) => {
+    const chunks = splitPgnGames(file.content);
+
+    if (chunks.length === 0) {
+      errors.push({ filename: file.filename, event: '未知', message: '文件为空或不包含 PGN。' });
+      return;
+    }
+
+    chunks.forEach((chunk, index) => {
+      const event = getPgnHeader(chunk, 'Event');
+      const parsed = parsePgn(chunk);
+
+      if (parsed.error || parsed.moves.length === 0) {
+        errors.push({
+          filename: file.filename,
+          event,
+          message: parsed.error || '棋谱没有可导入的着法。',
+        });
+        return;
+      }
+
+      games.push({
+        id: `${file.filename}-${index + 1}-${event}`,
+        filename: file.filename,
+        event,
+        white: getPgnHeader(chunk, 'White'),
+        black: getPgnHeader(chunk, 'Black'),
+        result: getPgnHeader(chunk, 'Result'),
+        moveCount: parsed.moves.length,
+        content: chunk,
+      });
+    });
+  });
+
+  return {
+    games,
+    errors,
+    summary: `导入 ${games.length} 盘${errors.length > 0 ? `，失败 ${errors.length} 盘` : ''}`,
+  };
+}
 
 function parsePgn(input: string): ParseResult {
   const trimmed = input.trim();
@@ -1909,6 +2000,7 @@ function App() {
   const [engineMode, setEngineMode] = useState<EngineMode>('wasm');
   const [engineLog, setEngineLog] = useState<string[]>([]);
   const [savedVariations, setSavedVariations] = useState<SavedVariation[]>([]);
+  const [bulkPgnLibrary, setBulkPgnLibrary] = useState<BulkPgnLibrary | null>(null);
   const [isGuessMode, setIsGuessMode] = useState(false);
   const [guessResult, setGuessResult] = useState<GuessMoveResult | null>(null);
   const [pgnReplyMessage, setPgnReplyMessage] = useState('');
@@ -2516,6 +2608,7 @@ function App() {
     setGuessResult(null);
     setGlobalAnalysis([]);
     setGlobalAnalysisProgress('');
+    setBulkPgnLibrary(null);
   };
 
   const updateText = (value: string) => {
@@ -2528,6 +2621,7 @@ function App() {
     setGuessResult(null);
     setGlobalAnalysis([]);
     setGlobalAnalysisProgress('');
+    setBulkPgnLibrary(null);
   };
 
   const updateCurrentNote = (value: string) => {
@@ -2541,26 +2635,38 @@ function App() {
     }));
   };
 
-  const importPgnFile = async (file: File | null) => {
-    if (!file) {
+  const importPgnFile = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0) {
       return;
     }
 
     try {
-      const importedText = await file.text();
-      const validation = parsePgn(importedText);
+      const importedFiles = await Promise.all(
+        Array.from(files).map(async (file) => ({ filename: file.name, content: await file.text() })),
+      );
+      const library = parseBulkPgnLibrary(importedFiles);
 
-      if (validation.error) {
-        showToast({ type: 'error', text: `导入失败：${validation.error}` });
+      if (library.games.length === 0) {
+        showToast({ type: 'error', text: `导入失败：${library.errors[0]?.message ?? '没有可用棋谱。'}` });
         return;
       }
 
+      setBulkPgnLibrary(library);
       setMode('pgn');
-      updateText(importedText);
-      showToast({ type: 'success', text: `已导入 ${file.name}` });
+      updateText(library.games[0].content);
+      setBulkPgnLibrary(library);
+      showToast({ type: library.errors.length > 0 ? 'error' : 'success', text: library.summary });
     } catch {
       showToast({ type: 'error', text: '导入失败：无法读取文件。' });
     }
+  };
+
+  const loadBulkPgnGame = (game: BulkPgnGameSummary) => {
+    const library = bulkPgnLibrary;
+    setMode('pgn');
+    updateText(game.content);
+    setBulkPgnLibrary(library);
+    showToast({ type: 'success', text: `已载入 ${game.event}` });
   };
 
   const exportCurrentPgn = () => {
@@ -2934,6 +3040,10 @@ function App() {
             onCopyFen={copyCurrentFen}
           />
 
+          {bulkPgnLibrary && (
+            <BulkPgnLibraryPanel library={bulkPgnLibrary} activeContent={text} onSelectGame={loadBulkPgnGame} />
+          )}
+
           <div className="mode-switch" role="tablist" aria-label="棋谱格式">
             <button
               type="button"
@@ -3018,7 +3128,7 @@ function ImportExportTools({
   onCopyFen,
 }: {
   canExportPgn: boolean;
-  onImportPgn: (file: File | null) => void;
+  onImportPgn: (files: FileList | File[] | null) => void;
   onExportPgn: () => void;
   onCopyFen: () => void;
 }) {
@@ -3028,9 +3138,10 @@ function ImportExportTools({
         导入 PGN
         <input
           type="file"
+          multiple
           accept=".pgn,application/x-chess-pgn,text/plain"
           onChange={(event) => {
-            onImportPgn(event.target.files?.[0] ?? null);
+            onImportPgn(event.target.files);
             event.target.value = '';
           }}
         />
@@ -3042,6 +3153,53 @@ function ImportExportTools({
         复制 FEN
       </button>
     </div>
+  );
+}
+
+function BulkPgnLibraryPanel({
+  library,
+  activeContent,
+  onSelectGame,
+}: {
+  library: BulkPgnLibrary;
+  activeContent: string;
+  onSelectGame: (game: BulkPgnGameSummary) => void;
+}) {
+  return (
+    <section className="bulk-pgn-library" aria-label="批量 PGN 棋谱库">
+      <div className="panel-header compact">
+        <div>
+          <h2>批量 PGN 棋谱库</h2>
+          <p>{library.summary}</p>
+        </div>
+      </div>
+      <div className="bulk-pgn-list">
+        {library.games.map((game) => (
+          <button
+            type="button"
+            key={game.id}
+            className={`bulk-pgn-card ${game.content === activeContent ? 'active' : ''}`}
+            onClick={() => onSelectGame(game)}
+          >
+            <strong>{game.event}</strong>
+            <span>{game.white} vs {game.black}</span>
+            <small>{game.filename} · {game.moveCount} 手 · {game.result}</small>
+          </button>
+        ))}
+      </div>
+      {library.errors.length > 0 && (
+        <details className="bulk-pgn-errors">
+          <summary>失败 {library.errors.length} 盘</summary>
+          <ul>
+            {library.errors.map((error, index) => (
+              <li key={`${error.filename}-${error.event}-${index}`}>
+                {error.filename} · {error.event}：{error.message}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </section>
   );
 }
 
@@ -4161,6 +4319,7 @@ export {
   getSpacedReviewIntervalDays,
   identifyOpening,
   normalizeSan,
+  parseBulkPgnLibrary,
   parseCandidateMoveEntries,
   scoreToWhiteCentipawns,
   updateMistakeCardReview,
