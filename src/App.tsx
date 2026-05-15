@@ -175,6 +175,31 @@ type OpeningMatch = {
   deviationMove?: string;
 };
 
+type OpeningImprovementCard = {
+  id: string;
+  openingName: string;
+  eco: string;
+  deviationPly: number;
+  playedMove: string;
+  bookMove: string;
+  reviewPrompt: string;
+  tags: string[];
+};
+
+type OpeningStat = {
+  eco: string;
+  name: string;
+  games: number;
+  deviations: number;
+  deviationRate: number;
+};
+
+type OpeningImprovementPlan = {
+  commonOpenings: OpeningStat[];
+  deviationCards: OpeningImprovementCard[];
+  summary: string;
+};
+
 const initialPgn = `[Event "Training Review"]
 [Site "Chess Me"]
 [Date "2026.05.14"]
@@ -620,6 +645,27 @@ function identifyOpening(playedMoves: string[]): OpeningMatch {
 
   if (recognizedCandidates[0]) {
     const entry = recognizedCandidates[0];
+    if (playedMoves.length > entry.moves.length) {
+      const continuation = openingBook
+        .filter(
+          (candidate) =>
+            candidate.moves.length > entry.moves.length &&
+            entry.moves.every((move, index) => candidate.moves[index] === move),
+        )
+        .sort((a, b) => a.moves.length - b.moves.length || b.eco.localeCompare(a.eco))[0];
+
+      if (continuation?.moves[entry.moves.length]) {
+        return {
+          eco: entry.eco,
+          name: entry.name,
+          status: 'deviation',
+          matchedPly: entry.moves.length,
+          deviationMove: playedMoves[entry.moves.length],
+          nextBookMove: continuation.moves[entry.moves.length],
+        };
+      }
+    }
+
     return {
       eco: entry.eco,
       name: entry.name,
@@ -661,6 +707,60 @@ function countCommonPrefix(expected: string[], actual: string[]) {
     count += 1;
   }
   return count;
+}
+
+function buildOpeningImprovementPlan(games: string[][]): OpeningImprovementPlan {
+  const statMap = new Map<string, OpeningStat>();
+  const deviationCards: OpeningImprovementCard[] = [];
+
+  games.forEach((moves, gameIndex) => {
+    const opening = identifyOpening(moves);
+    if (opening.status === 'unknown' || opening.status === 'start') {
+      return;
+    }
+
+    const key = `${opening.eco}:${opening.name}`;
+    const existing = statMap.get(key) ?? {
+      eco: opening.eco,
+      name: opening.name,
+      games: 0,
+      deviations: 0,
+      deviationRate: 0,
+    };
+    existing.games += 1;
+
+    if (opening.status === 'deviation' && opening.deviationMove && opening.nextBookMove) {
+      existing.deviations += 1;
+      const deviationPly = opening.matchedPly + 1;
+      deviationCards.push({
+        id: `${key}:game-${gameIndex}:ply-${deviationPly}`,
+        openingName: opening.name,
+        eco: opening.eco,
+        deviationPly,
+        playedMove: opening.deviationMove,
+        bookMove: opening.nextBookMove,
+        reviewPrompt: `${opening.name} 第 ${deviationPly} ply 脱谱：实战 ${opening.deviationMove}，建议复习库线 ${opening.nextBookMove}。`,
+        tags: ['开局'],
+      });
+    }
+
+    statMap.set(key, existing);
+  });
+
+  const commonOpenings = Array.from(statMap.values())
+    .map((stat) => ({
+      ...stat,
+      deviationRate: stat.games === 0 ? 0 : Math.round((stat.deviations / stat.games) * 100),
+    }))
+    .sort((a, b) => b.deviations - a.deviations || b.games - a.games || a.name.localeCompare(b.name));
+
+  const summary = `常下开局 ${commonOpenings.length} 个 · 开局分歧 ${deviationCards.length} 个`;
+
+  return {
+    commonOpenings,
+    deviationCards,
+    summary,
+  };
 }
 
 function normalizeSan(san: string) {
@@ -1370,6 +1470,10 @@ function App() {
   );
   const trainingStatsByTag = useMemo(() => buildTrainingStatsByTag(mistakeCards), [mistakeCards]);
   const openingMatch = useMemo(() => identifyOpening(playedMoves), [playedMoves]);
+  const openingImprovementPlan = useMemo(
+    () => buildOpeningImprovementPlan(mode === 'pgn' ? [result.moves.map((move) => move.san)] : []),
+    [mode, result.moves],
+  );
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
 
@@ -2239,7 +2343,7 @@ function App() {
             onStop={stopAnalysis}
           />
 
-          <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} />
+          <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
 
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
@@ -3001,7 +3105,15 @@ function SavedVariationsPanel({
   );
 }
 
-function OpeningPanel({ opening, playedPly }: { opening: OpeningMatch; playedPly: number }) {
+function OpeningPanel({
+  opening,
+  playedPly,
+  improvementPlan,
+}: {
+  opening: OpeningMatch;
+  playedPly: number;
+  improvementPlan: OpeningImprovementPlan;
+}) {
   const statusText: Record<OpeningMatch['status'], string> = {
     start: '起始局面',
     book: '仍在开局库',
@@ -3013,7 +3125,7 @@ function OpeningPanel({ opening, playedPly }: { opening: OpeningMatch; playedPly
   return (
     <section className="opening-panel" aria-label="开局识别">
       <div className="opening-header">
-        <span>开局识别</span>
+        <span>开局提升</span>
         <strong>{opening.eco}</strong>
       </div>
       <h2>{opening.name}</h2>
@@ -3028,6 +3140,37 @@ function OpeningPanel({ opening, playedPly }: { opening: OpeningMatch; playedPly
           分歧点：实战走了 <strong>{opening.deviationMove}</strong>，库线是{' '}
           <strong>{opening.nextBookMove ?? '-'}</strong>
         </p>
+      )}
+
+      <div className="opening-improvement-summary">
+        <span>{improvementPlan.summary}</span>
+        <p>自动识别常下开局、脱谱位置，并把关键开局分歧整理成复习提示。</p>
+      </div>
+
+      {improvementPlan.commonOpenings.length > 0 && (
+        <div className="opening-stat-list">
+          {improvementPlan.commonOpenings.slice(0, 3).map((stat) => (
+            <span key={`${stat.eco}-${stat.name}`}>
+              {stat.eco} {stat.name}：{stat.games} 盘 · 脱谱率 {stat.deviationRate}%
+            </span>
+          ))}
+        </div>
+      )}
+
+      {improvementPlan.deviationCards.length > 0 && (
+        <div className="opening-card-list">
+          {improvementPlan.deviationCards.slice(0, 3).map((card) => (
+            <article className="opening-review-card" key={card.id}>
+              <strong>
+                {card.eco} {card.openingName} · 第 {card.deviationPly} ply
+              </strong>
+              <p>
+                实战 {card.playedMove}，建议复习库线 <strong>{card.bookMove}</strong>
+              </p>
+              <small>{card.reviewPrompt}</small>
+            </article>
+          ))}
+        </div>
       )}
     </section>
   );
@@ -3238,9 +3381,11 @@ export {
   analyzeGuessMove,
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
+  buildOpeningImprovementPlan,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   getSpacedReviewIntervalDays,
+  identifyOpening,
   normalizeSan,
   parseCandidateMoveEntries,
   scoreToWhiteCentipawns,

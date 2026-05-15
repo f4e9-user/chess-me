@@ -4,9 +4,11 @@ import {
   analyzeGuessMove,
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
+  buildOpeningImprovementPlan,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   getSpacedReviewIntervalDays,
+  identifyOpening,
   normalizeSan,
   parseCandidateMoveEntries,
   scoreToWhiteCentipawns,
@@ -77,6 +79,40 @@ describe('candidate move training helpers', () => {
 
     expect(result.isValid).toBe(false);
     expect(result.validationMessage).toContain('至少写出 2 个候选着法');
+  });
+});
+
+describe('opening improvement helpers', () => {
+  it('records the exact ply where the game leaves the opening book', () => {
+    const match = identifyOpening(['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'h6']);
+
+    expect(match).toMatchObject({
+      eco: 'C60',
+      name: 'Ruy Lopez',
+      status: 'deviation',
+      matchedPly: 5,
+      deviationMove: 'h6',
+      nextBookMove: 'a6',
+    });
+  });
+
+  it('builds an opening improvement plan with deviation review cards and common opening stats', () => {
+    const plan = buildOpeningImprovementPlan([
+      ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'h6'],
+      ['e4', 'c5', 'Nf3', 'd6'],
+      ['d4', 'd5', 'c4'],
+    ]);
+
+    expect(plan.commonOpenings[0]).toMatchObject({ name: 'Ruy Lopez', games: 1 });
+    expect(plan.commonOpenings.map((item) => item.name)).toContain('Sicilian Defense: Modern Variations');
+    expect(plan.deviationCards[0]).toMatchObject({
+      openingName: 'Ruy Lopez',
+      deviationPly: 6,
+      playedMove: 'h6',
+      bookMove: 'a6',
+      tags: ['开局'],
+    });
+    expect(plan.summary).toContain('开局分歧 1 个');
   });
 });
 

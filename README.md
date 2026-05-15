@@ -121,6 +121,18 @@ Chess Me 是一个面向个人棋力提升的国际象棋复盘与训练工具�
 - 统计候选答案覆盖率、平均排序得分、有效训练次数和有答案未选次数。
 - 本地保留最近 20 次候选训练摘要，方便连续训练时快速回看。
 
+### 8. 开局提升
+
+当前分支新增 **开局提升**，把原有开局识别扩展为可训练的开局复盘模块。
+
+功能：
+
+- 自动识别当前 PGN 的常下开局，并展示 ECO、开局名和当前状态。
+- 记录实战在哪一个 ply 脱离内置开局库，并显示实战手与推荐库线。
+- 根据对局着法生成开局复习卡片提示，用于后续加入错题本或专项复习。
+- 统计常见开局、脱谱次数和脱谱率，帮助定位最需要优先复习的开局。
+- 当前支持内置开局库；自定义开局库与跨多盘统计保留为后续扩展。
+
 ## 使用场景
 
 1. 从 lichess、Chess.com 或其他平台导出 PGN。
@@ -229,11 +241,11 @@ public/stockfish/
 
 ### D. 开局提升
 
-- [ ] 自动识别用户常下开局。
-- [ ] 记录在哪一步脱离开局库。
-- [ ] 针对开局分歧生成复习卡片。
+- [x] 自动识别用户常下开局。
+- [x] 记录在哪一步脱离开局库。
+- [x] 针对开局分歧生成复习卡片。
 - [ ] 支持自定义开局库。
-- [ ] 根据个人对局统计常见失分开局。
+- [x] 根据个人对局统计常见失分开局。
 
 ### E. 中局计划训练
 
@@ -304,6 +316,7 @@ public/stockfish/
 ```bash
 npm test
 npm run build
+npm test -- --run src/App.test.ts -t "opening improvement"
 npm test -- --run src/App.test.ts -t "candidate move training"
 npm test -- --run src/App.test.ts -t "advances spaced review|resets review stage|builds a daily training plan"
 git diff --check
