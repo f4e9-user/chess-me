@@ -246,6 +246,19 @@ type EndgameTrainingPlan = {
   summary: string;
 };
 
+type ReviewReport = {
+  summary: string;
+  biggestMistake: GlobalMoveAnalysis | null;
+  sections: {
+    opening: string;
+    middlegame: string;
+    endgame: string;
+    biggestMistake: string;
+  };
+  trainingAdvice: string;
+  markdown: string;
+};
+
 const initialPgn = `[Event "Training Review"]
 [Site "Chess Me"]
 [Date "2026.05.14"]
@@ -977,6 +990,72 @@ function buildEndgameTrainingPlan({
   };
 }
 
+function buildReviewReport({
+  opening,
+  analyses,
+  middlegamePlan,
+  endgamePlan,
+}: {
+  opening: OpeningMatch;
+  analyses: GlobalMoveAnalysis[];
+  middlegamePlan: MiddlegamePlanTraining;
+  endgamePlan: EndgameTrainingPlan;
+}): ReviewReport {
+  const riskyMoves = analyses
+    .filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint)
+    .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
+  const biggestMistake = riskyMoves[0] ?? null;
+  const openingSection =
+    opening.status === 'deviation'
+      ? `${opening.eco} ${opening.name}：第 ${opening.matchedPly + 1} ply 脱离开局库，实战 ${opening.deviationMove ?? '-'}，建议复习 ${opening.nextBookMove ?? '主线计划'}。`
+      : `${opening.eco} ${opening.name}：${opening.status === 'unknown' ? '暂未识别到明确开局' : '开局阶段基本可追踪'}。`;
+  const middlegameSection = middlegamePlan.focusCards.length
+    ? `${middlegamePlan.summary} 关键主题：${middlegamePlan.themeStats.map((theme) => theme.theme).slice(0, 3).join('、') || middlegamePlan.focusCards[0].topic}。`
+    : '中局阶段暂未生成关键训练卡；建议先运行整盘分析。';
+  const endgameSection =
+    endgamePlan.phase === 'endgame'
+      ? `${endgamePlan.summary} 主题：${endgamePlan.themes.join('、') || '基础残局转换'}。`
+      : '本局尚未识别到明确残局阶段。';
+  const biggestMistakeSection = biggestMistake
+    ? `最大失误：${biggestMistake.label} ${biggestMistake.san}，损失 ${biggestMistake.centipawnLoss} cp；建议比较引擎首选 ${biggestMistake.bestMoveSan || '-'}。`
+    : '最大失误：暂未发现明显失误。';
+  const topTheme = middlegamePlan.themeStats[0]?.theme ?? endgamePlan.themes[0] ?? '候选着法复盘';
+  const trainingAdvice = biggestMistake
+    ? `优先训练${topTheme}，并把 ${biggestMistake.label} 前的候选着法写成 2-3 个备选方案。`
+    : `优先训练${topTheme}，保持每盘棋复盘开局、中局和残局三个阶段。`;
+  const summary = biggestMistake
+    ? `本局复盘完成，${opening.name}，最大失误：${biggestMistake.label}，推荐训练：${topTheme}。`
+    : `本局复盘完成，${opening.name}，暂未发现重大失误，推荐训练：${topTheme}。`;
+  const markdown = [
+    '# Chess Me 复盘报告',
+    '',
+    `## 总结\n${summary}`,
+    '',
+    `## 开局阶段表现\n${openingSection}`,
+    '',
+    `## 中局关键转折\n${middlegameSection}`,
+    '',
+    `## 残局准确性\n${endgameSection}`,
+    '',
+    `## 最大失误\n${biggestMistakeSection}`,
+    '',
+    `## 下一次训练建议\n${trainingAdvice}`,
+  ].join('\n');
+
+  return {
+    summary,
+    biggestMistake,
+    sections: {
+      opening: openingSection,
+      middlegame: middlegameSection,
+      endgame: endgameSection,
+      biggestMistake: biggestMistakeSection,
+    },
+    trainingAdvice,
+    markdown,
+  };
+}
+
 function normalizeSan(san: string) {
   return san.replace(/[+#?!]+/g, '');
 }
@@ -1517,8 +1596,8 @@ async function copyText(textToCopy: string) {
   document.body.removeChild(textArea);
 }
 
-function downloadText(filename: string, content: string) {
-  const blob = new Blob([content], { type: 'application/x-chess-pgn;charset=utf-8' });
+function downloadText(filename: string, content: string, type = 'application/x-chess-pgn;charset=utf-8') {
+  const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -1746,6 +1825,16 @@ function App() {
   const endgameTrainingPlan = useMemo(
     () => buildEndgameTrainingPlan({ positions: result.positions, analyses: globalAnalysis }),
     [globalAnalysis, result.positions],
+  );
+  const reviewReport = useMemo(
+    () =>
+      buildReviewReport({
+        opening: openingMatch,
+        analyses: globalAnalysis,
+        middlegamePlan: middlegamePlanTraining,
+        endgamePlan: endgameTrainingPlan,
+      }),
+    [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch],
   );
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
@@ -2334,6 +2423,20 @@ function App() {
     }
   };
 
+  const exportReviewReport = () => {
+    downloadText('chess-me-review-report.md', reviewReport.markdown, 'text/markdown;charset=utf-8');
+    showToast({ type: 'success', text: '已导出复盘报告 Markdown。' });
+  };
+
+  const copyReviewReport = async () => {
+    try {
+      await copyText(reviewReport.markdown);
+      showToast({ type: 'success', text: '已复制复盘报告 Markdown。' });
+    } catch {
+      showToast({ type: 'error', text: '复制失败：浏览器拒绝了剪贴板操作。' });
+    }
+  };
+
   const copyCurrentFen = async () => {
     try {
       await copyText(activeFen);
@@ -2640,6 +2743,8 @@ function App() {
           <MiddlegamePlanPanel plan={middlegamePlanTraining} onSelectMove={(index) => updatePositionIndex(index + 1)} />
 
           <EndgameTrainingPanel plan={endgameTrainingPlan} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+
+          <ReviewReportPanel report={reviewReport} onCopy={copyReviewReport} onExport={exportReviewReport} />
 
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
@@ -3468,6 +3573,59 @@ function EndgameTrainingPanel({
   );
 }
 
+function ReviewReportPanel({
+  report,
+  onCopy,
+  onExport,
+}: {
+  report: ReviewReport;
+  onCopy: () => void;
+  onExport: () => void;
+}) {
+  return (
+    <section className="review-report-panel" aria-label="复盘报告">
+      <div className="review-report-header">
+        <div>
+          <span>复盘报告</span>
+          <p>{report.summary}</p>
+        </div>
+        <div className="review-report-actions">
+          <button type="button" onClick={onCopy}>
+            复制 Markdown
+          </button>
+          <button type="button" onClick={onExport}>
+            导出 Markdown
+          </button>
+        </div>
+      </div>
+
+      <div className="review-report-grid">
+        <article>
+          <span>开局阶段表现</span>
+          <p>{report.sections.opening}</p>
+        </article>
+        <article>
+          <span>中局关键转折</span>
+          <p>{report.sections.middlegame}</p>
+        </article>
+        <article>
+          <span>残局准确性</span>
+          <p>{report.sections.endgame}</p>
+        </article>
+        <article>
+          <span>最大失误</span>
+          <p>{report.sections.biggestMistake}</p>
+        </article>
+      </div>
+
+      <div className="review-training-advice">
+        <strong>下一次训练建议</strong>
+        <p>{report.trainingAdvice}</p>
+      </div>
+    </section>
+  );
+}
+
 function SavedVariationsPanel({
   variations,
   onDelete,
@@ -3780,6 +3938,7 @@ export {
   buildEndgameTrainingPlan,
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
+  buildReviewReport,
   buildMiddlegamePlanTraining,
   getPgnReplyAfterCorrectGuess,
   classifyMoveFromEvaluationDrop,
