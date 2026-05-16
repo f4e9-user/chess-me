@@ -14,8 +14,13 @@ import {
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisReport,
-  completeEngineAnalysisFromRequest,
+  buildKeyMomentSummary,
+  classifyKeyAnalysisMoment,
+  formatMultiPvDisplayLines,
+  parseStockfishInfo,
+  rankMultiPvLines,
   classifyMoveFromEvaluationDrop,
+  completeEngineAnalysisFromRequest,
   detectSwingPoint,
   getAnalysisDepthPresetConfig,
   filterGlobalAnalysisMoments,
@@ -392,6 +397,92 @@ describe('analysis controls, cache, and key moment helpers', () => {
     ).toBe('pgn=1. e4 e5|preset=standard|depth=10|multiPv=2|engine=wasm');
   });
 
+  it('classifies key moments by severity, swing, evaluation volatility, and reusable training value without mutating the source rows', () => {
+    const analyses = [
+      {
+        moveIndex: 0,
+        label: '1. e4',
+        san: 'e4',
+        quality: '好棋' as const,
+        centipawnLoss: 20,
+        beforeScore: 15,
+        afterScore: 5,
+        isSwingPoint: false,
+        bestMoveSan: 'e4',
+        multiPvLines: [],
+      },
+      {
+        moveIndex: 5,
+        label: '3... Nf6',
+        san: 'Nf6',
+        quality: '好棋' as const,
+        centipawnLoss: 55,
+        beforeScore: -220,
+        afterScore: 190,
+        isSwingPoint: false,
+        bestMoveSan: 'c5',
+        multiPvLines: [],
+      },
+      {
+        moveIndex: 9,
+        label: '5. Qh5',
+        san: 'Qh5',
+        quality: '疑问手' as const,
+        centipawnLoss: 85,
+        beforeScore: 40,
+        afterScore: -45,
+        isSwingPoint: false,
+        bestMoveSan: 'Nc3',
+        multiPvLines: [],
+      },
+      {
+        moveIndex: 18,
+        label: '10... g5',
+        san: 'g5',
+        quality: '败着' as const,
+        centipawnLoss: 420,
+        beforeScore: -80,
+        afterScore: 360,
+        isSwingPoint: true,
+        bestMoveSan: 'Re8',
+        multiPvLines: [],
+      },
+    ];
+
+    const firstClassification = classifyKeyAnalysisMoment(analyses[0]);
+    const volatileClassification = classifyKeyAnalysisMoment(analyses[1]);
+    const mistakeClassification = classifyKeyAnalysisMoment(analyses[2]);
+    const blunderClassification = classifyKeyAnalysisMoment(analyses[3]);
+    const keyMoments = filterGlobalAnalysisMoments(analyses, 'key');
+    const summary = buildKeyMomentSummary(keyMoments);
+
+    expect(firstClassification.isKeyMoment).toBe(false);
+    expect(volatileClassification).toMatchObject({
+      isKeyMoment: true,
+      severity: 'evaluation-swing',
+      trainingValue: 'high',
+      reasons: expect.arrayContaining(['大幅评价波动']),
+    });
+    expect(mistakeClassification).toMatchObject({
+      isKeyMoment: true,
+      severity: 'inaccuracy',
+      trainingValue: 'medium',
+      reasons: expect.arrayContaining(['疑问手']),
+    });
+    expect(blunderClassification).toMatchObject({
+      isKeyMoment: true,
+      severity: 'blunder',
+      trainingValue: 'high',
+      reasons: expect.arrayContaining(['败着', '局势突变', '大幅评价波动']),
+    });
+    expect(keyMoments.map((item) => item.san)).toEqual(['Nf6', 'Qh5', 'g5']);
+    expect(keyMoments[0]).toBe(analyses[1]);
+    expect(analyses.map((item) => Object.keys(item))).not.toContain('keyMoment');
+    expect(summary).toContain('关键时刻 3 个');
+    expect(summary).toContain('败着 1 个');
+    expect(summary).toContain('高训练价值 2 个');
+  });
+
   it('builds report rows with multipv lines and filters key training moments', () => {
     const report = buildGlobalAnalysisReport({
       moves: [
@@ -402,12 +493,12 @@ describe('analysis controls, cache, and key moment helpers', () => {
       positionScores: [20, 25, 240, -180],
       bestMoves: ['e4', 'Nf6', 'Nc3'],
       multiPvByMove: [
-        [{ rank: 1, score: { type: 'cp', value: 20 }, pv: ['e4', 'e5'] }],
+        [{ rank: 1, score: { type: 'cp', value: 20 }, pv: ['e4', 'e5'], uci: ['e2e4'], firstMoveSan: 'e4', displayScore: '+0.20' }],
         [
-          { rank: 1, score: { type: 'cp', value: 25 }, pv: ['Nf6'] },
-          { rank: 2, score: { type: 'cp', value: 10 }, pv: ['e5'] },
+          { rank: 1, score: { type: 'cp', value: 25 }, pv: ['Nf6'], uci: ['g8f6'], firstMoveSan: 'Nf6', displayScore: '+0.25' },
+          { rank: 2, score: { type: 'cp', value: 10 }, pv: ['e5'], uci: ['e7e5'], firstMoveSan: 'e5', displayScore: '+0.10' },
         ],
-        [{ rank: 1, score: { type: 'cp', value: 240 }, pv: ['Nc3'] }],
+        [{ rank: 1, score: { type: 'cp', value: 240 }, pv: ['Nc3'], uci: ['b1c3'], firstMoveSan: 'Nc3', displayScore: '+2.40' }],
       ],
     });
 
@@ -428,8 +519,8 @@ describe('analysis controls, cache, and key moment helpers', () => {
           pv: ['Nf6'],
         },
         multiPvLines: [
-          { rank: 1, score: { type: 'cp', value: 25 }, pv: ['Nf6'] },
-          { rank: 2, score: { type: 'cp', value: 10 }, pv: ['e5'] },
+          { rank: 1, score: { type: 'cp', value: 25 }, pv: ['Nf6'], uci: ['g8f6'], firstMoveSan: 'Nf6', displayScore: '+0.25' },
+          { rank: 2, score: { type: 'cp', value: 10 }, pv: ['e5'], uci: ['e7e5'], firstMoveSan: 'e5', displayScore: '+0.10' },
         ],
       },
       bestMove: 'g8f6',
@@ -446,6 +537,44 @@ describe('analysis controls, cache, and key moment helpers', () => {
     expect(completed.multiPvLines).toHaveLength(2);
     expect(report[0].multiPvLines).toEqual(completed.multiPvLines);
     expect(report[0].multiPvLines[1]).toMatchObject({ rank: 2, pv: ['e5'] });
+  });
+
+
+  it('parses Stockfish MultiPV info into ranked SAN/UCI candidate lines with normalized score ordering', () => {
+    const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const parsedFirst = parseStockfishInfo('info depth 12 multipv 2 score cp 18 pv d2d4 d7d5 c2c4', fen);
+    const parsedSecond = parseStockfishInfo('info depth 12 multipv 1 score cp 32 pv e2e4 e7e5 g1f3', fen);
+
+    expect(parsedFirst?.multiPvLine).toMatchObject({
+      rank: 2,
+      score: { type: 'cp', value: 18 },
+      pv: ['d4', 'd5', 'c4'],
+      uci: ['d2d4', 'd7d5', 'c2c4'],
+      firstMoveSan: 'd4',
+      displayScore: '+0.18',
+    });
+    expect(rankMultiPvLines([parsedFirst!.multiPvLine!, parsedSecond!.multiPvLine!]).map((line) => line.firstMoveSan)).toEqual(['e4', 'd4']);
+  });
+
+  it('formats MultiPV display lines and degrades to the existing best line when MultiPV data is absent', () => {
+    expect(
+      formatMultiPvDisplayLines({
+        multiPvLines: [
+          { rank: 2, score: { type: 'cp', value: 18 }, pv: ['d4', 'd5'], uci: ['d2d4', 'd7d5'], firstMoveSan: 'd4', displayScore: '+0.18' },
+          { rank: 1, score: { type: 'cp', value: 32 }, pv: ['e4', 'e5'], uci: ['e2e4', 'e7e5'], firstMoveSan: 'e4', displayScore: '+0.32' },
+        ],
+        fallbackBestMoveSan: 'e4',
+        fallbackPv: ['e4', 'e5'],
+      }),
+    ).toEqual(['#1 e4 · +0.32 · e4 e5 · UCI e2e4 e7e5', '#2 d4 · +0.18 · d4 d5 · UCI d2d4 d7d5']);
+
+    expect(
+      formatMultiPvDisplayLines({
+        multiPvLines: [],
+        fallbackBestMoveSan: 'Nf3',
+        fallbackPv: ['Nf3', 'd5'],
+      }),
+    ).toEqual(['首选 Nf3 · 主线 Nf3 d5']);
   });
 
   it('keeps cancellation disabled before analysis starts so idle buttons cannot reset state by mistake', () => {

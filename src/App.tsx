@@ -111,6 +111,15 @@ type StockfishAnalysis = {
 type EvaluationPerspective = 'white' | 'sideToMove' | 'board';
 type EngineMode = 'wasm' | 'asm';
 type MoveQualityLabel = '好棋' | '疑问手' | '失误' | '败着';
+type KeyMomentSeverity = 'inaccuracy' | 'mistake' | 'blunder' | 'evaluation-swing';
+type KeyMomentTrainingValue = 'medium' | 'high';
+
+type KeyAnalysisMomentClassification = {
+  isKeyMoment: boolean;
+  severity: KeyMomentSeverity | null;
+  trainingValue: KeyMomentTrainingValue | null;
+  reasons: string[];
+};
 
 type GuessMoveResult = {
   guessedSan: string;
@@ -196,6 +205,9 @@ type MultiPvLine = {
   rank: number;
   score: StockfishAnalysis['score'];
   pv: string[];
+  uci: string[];
+  firstMoveSan: string;
+  displayScore: string;
 };
 
 type GlobalMoveAnalysis = {
@@ -804,14 +816,74 @@ function buildGlobalAnalysisReport({
   });
 }
 
+function getEvaluationSwingMagnitude(analysis: Pick<GlobalMoveAnalysis, 'beforeScore' | 'afterScore'>) {
+  if (analysis.beforeScore === null || analysis.afterScore === null) {
+    return 0;
+  }
+
+  return Math.abs(analysis.afterScore - analysis.beforeScore);
+}
+
+function classifyKeyAnalysisMoment(analysis: GlobalMoveAnalysis): KeyAnalysisMomentClassification {
+  const evaluationSwing = getEvaluationSwingMagnitude(analysis);
+  const reasons = [
+    analysis.quality === '疑问手' ? '疑问手' : '',
+    analysis.quality === '失误' ? '失误' : '',
+    analysis.quality === '败着' ? '败着' : '',
+    analysis.isSwingPoint ? '局势突变' : '',
+    evaluationSwing >= 300 ? '大幅评价波动' : '',
+    analysis.centipawnLoss >= 120 ? '高训练价值' : '',
+  ].filter(Boolean);
+
+  let severity: KeyMomentSeverity | null = null;
+  if (analysis.quality === '败着') {
+    severity = 'blunder';
+  } else if (analysis.quality === '失误') {
+    severity = 'mistake';
+  } else if (analysis.quality === '疑问手') {
+    severity = 'inaccuracy';
+  } else if (analysis.isSwingPoint || evaluationSwing >= 300) {
+    severity = 'evaluation-swing';
+  }
+
+  const isKeyMoment = Boolean(severity || analysis.isSwingPoint || evaluationSwing >= 300);
+  const trainingValue: KeyMomentTrainingValue | null = isKeyMoment
+    ? analysis.centipawnLoss >= 120 || analysis.isSwingPoint || evaluationSwing >= 300 || analysis.quality === '败着'
+      ? 'high'
+      : 'medium'
+    : null;
+
+  return {
+    isKeyMoment,
+    severity,
+    trainingValue,
+    reasons,
+  };
+}
+
+function buildKeyMomentSummary(analyses: GlobalMoveAnalysis[]) {
+  const classifications = analyses.map(classifyKeyAnalysisMoment).filter((item) => item.isKeyMoment);
+  if (!classifications.length) {
+    return '暂无关键时刻；可查看全部分析行继续复盘。';
+  }
+
+  const countBySeverity = (severity: KeyMomentSeverity) => classifications.filter((item) => item.severity === severity).length;
+  const highValueCount = classifications.filter((item) => item.trainingValue === 'high').length;
+  return [
+    `关键时刻 ${classifications.length} 个`,
+    `败着 ${countBySeverity('blunder')} 个`,
+    `失误 ${countBySeverity('mistake')} 个`,
+    `疑问手 ${countBySeverity('inaccuracy')} 个`,
+    `高训练价值 ${highValueCount} 个`,
+  ].join(' · ');
+}
+
 function filterGlobalAnalysisMoments(analyses: GlobalMoveAnalysis[], filter: GlobalAnalysisMomentFilter) {
   if (filter === 'all') {
     return analyses;
   }
 
-  return analyses.filter(
-    (item) => item.isSwingPoint || item.quality === '疑问手' || item.quality === '失误' || item.quality === '败着',
-  );
+  return analyses.filter((item) => classifyKeyAnalysisMoment(item).isKeyMoment);
 }
 
 function formatVariationMoveLabel(move: Move) {
@@ -906,7 +978,7 @@ function isPromotionMove(fen: string, from: Square, to: Square) {
 }
 
 function completeEngineAnalysisFromRequest({ request, bestMove, bestMoveSan }: CompletedEngineAnalysisInput): StockfishAnalysis & { multiPvLines: MultiPvLine[] } {
-  const multiPvLines = request?.multiPvLines ?? [];
+  const multiPvLines = rankMultiPvLines(request?.multiPvLines ?? []);
 
   return {
     depth: request?.latest.depth ?? 0,
@@ -946,10 +1018,15 @@ function parseStockfishInfo(line: string, fen: string): StockfishInfoAnalysis | 
 
   const multipvMatch = line.match(/\bmultipv (\d+)/);
   const rank = multipvMatch ? Number(multipvMatch[1]) : 1;
+  const uci = pvMatch ? pvMatch[1].trim().split(/\s+/).slice(0, 8) : [];
+  const pv = formatPrincipalVariation(fen, uci);
   const multiPvLine: MultiPvLine = {
     rank,
     score,
-    pv: pvMatch ? formatPrincipalVariation(fen, pvMatch[1].split(/\s+/).slice(0, 8)) : [],
+    pv,
+    uci,
+    firstMoveSan: pv[0] ?? '',
+    displayScore: formatMultiPvScore(score),
   };
 
   return {
@@ -973,6 +1050,50 @@ function formatPrincipalVariation(fen: string, uciMoves: string[]) {
   }
 
   return sanMoves;
+}
+
+
+function formatMultiPvScore(score: StockfishAnalysis['score']) {
+  if (!score) {
+    return '等待评分';
+  }
+
+  if (score.type === 'mate') {
+    return `${score.value >= 0 ? '+' : '-'}M${Math.abs(score.value)}`;
+  }
+
+  const pawns = score.value / 100;
+  return `${pawns >= 0 ? '+' : ''}${pawns.toFixed(2)}`;
+}
+
+function rankMultiPvLines(lines: MultiPvLine[]) {
+  return [...lines].sort((a, b) => a.rank - b.rank);
+}
+
+function formatMultiPvDisplayLines({
+  multiPvLines,
+  fallbackBestMoveSan,
+  fallbackPv,
+}: {
+  multiPvLines: MultiPvLine[];
+  fallbackBestMoveSan: string;
+  fallbackPv: string[];
+}) {
+  const rankedLines = rankMultiPvLines(multiPvLines);
+  if (rankedLines.length === 0) {
+    const fallbackParts = [`首选 ${fallbackBestMoveSan || '-'}`];
+    if (fallbackPv.length > 0) {
+      fallbackParts.push(`主线 ${fallbackPv.join(' ')}`);
+    }
+    return [fallbackParts.join(' · ')];
+  }
+
+  return rankedLines.map((line) => [
+    `#${line.rank} ${line.firstMoveSan || line.pv[0] || '-'}`,
+    line.displayScore,
+    line.pv.join(' ') || '-',
+    line.uci.length ? `UCI ${line.uci.join(' ')}` : '',
+  ].filter(Boolean).join(' · '));
 }
 
 function uciToMoveInput(uci: string): MoveInput {
@@ -1503,8 +1624,7 @@ function buildReviewReport({
   middlegamePlan: MiddlegamePlanTraining;
   endgamePlan: EndgameTrainingPlan;
 }): ReviewReport {
-  const riskyMoves = analyses
-    .filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint)
+  const riskyMoves = filterGlobalAnalysisMoments(analyses, 'key')
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
   const biggestMistake = riskyMoves[0] ?? null;
   const openingSection =
@@ -4147,6 +4267,7 @@ function GlobalAnalysisPanel({
 }) {
   const swingPoints = analyses.filter((item) => item.isSwingPoint);
   const visibleAnalyses = filterGlobalAnalysisMoments(analyses, momentFilter);
+  const keyMomentSummary = buildKeyMomentSummary(filterGlobalAnalysisMoments(analyses, 'key'));
 
   return (
     <section className="global-analysis-panel" aria-label="一键全局分析">
@@ -4197,6 +4318,7 @@ function GlobalAnalysisPanel({
       </div>
 
       <p className="analysis-preset-help">{presetConfig.description}</p>
+      {analyses.length > 0 && <p className="analysis-key-summary">{keyMomentSummary}</p>}
 
       {swingPoints.length > 0 && (
         <div className="swing-summary">
@@ -4218,11 +4340,13 @@ function GlobalAnalysisPanel({
               <span className="analysis-quality">{item.quality}</span>
               <span className="analysis-loss">损失 {item.centipawnLoss} cp</span>
               <span className="analysis-best">首选 {item.bestMoveSan || '-'}</span>
-              {item.multiPvLines.length > 0 && (
-                <span className="analysis-multipv">
-                  {item.multiPvLines.map((line) => `#${line.rank} ${line.pv.join(' ') || '-'}`).join(' ｜ ')}
-                </span>
-              )}
+              <span className="analysis-multipv">
+                {formatMultiPvDisplayLines({
+                  multiPvLines: item.multiPvLines,
+                  fallbackBestMoveSan: item.bestMoveSan,
+                  fallbackPv: item.bestMoveSan ? [item.bestMoveSan] : [],
+                }).join(' ｜ ')}
+              </span>
               {item.isSwingPoint && <strong>突变</strong>}
             </button>
           ))}
@@ -4758,7 +4882,12 @@ export {
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisReport,
+  buildKeyMomentSummary,
   buildMiddlegamePlanTraining,
+  classifyKeyAnalysisMoment,
+  formatMultiPvDisplayLines,
+  parseStockfishInfo,
+  rankMultiPvLines,
   completeEngineAnalysisFromRequest,
   filterGlobalAnalysisMoments,
   getAnalysisDepthPresetConfig,
