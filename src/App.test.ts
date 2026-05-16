@@ -11,8 +11,12 @@ import {
   parseBulkPgnLibrary,
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
+  buildGlobalAnalysisCacheKey,
+  buildGlobalAnalysisReport,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
+  getAnalysisDepthPresetConfig,
+  filterGlobalAnalysisMoments,
   getPgnReplyAfterCorrectGuess,
   getSpacedReviewIntervalDays,
   identifyOpening,
@@ -209,10 +213,10 @@ describe('strength profile helpers', () => {
   it('summarizes phase losses, mistake types, weak areas, and training priorities', () => {
     const profile = buildStrengthProfile({
       analyses: [
-        { moveIndex: 2, label: '2. Nf3', san: 'Nf3', quality: '疑问手', centipawnLoss: 70, beforeScore: 20, afterScore: -50, isSwingPoint: false, bestMoveSan: 'd4' },
-        { moveIndex: 14, label: '8. Bxh7+', san: 'Bxh7+', quality: '败着', centipawnLoss: 360, beforeScore: 70, afterScore: -290, isSwingPoint: true, bestMoveSan: 'Re1' },
-        { moveIndex: 22, label: '12... Qh4', san: 'Qh4', quality: '失误', centipawnLoss: 180, beforeScore: -40, afterScore: 140, isSwingPoint: true, bestMoveSan: 'Qc7' },
-        { moveIndex: 48, label: '25. Kf2', san: 'Kf2', quality: '失误', centipawnLoss: 140, beforeScore: 0, afterScore: -160, isSwingPoint: true, bestMoveSan: 'Ke2' },
+        { moveIndex: 2, label: '2. Nf3', san: 'Nf3', quality: '疑问手', centipawnLoss: 70, beforeScore: 20, afterScore: -50, isSwingPoint: false, bestMoveSan: 'd4', multiPvLines: [] },
+        { moveIndex: 14, label: '8. Bxh7+', san: 'Bxh7+', quality: '败着', centipawnLoss: 360, beforeScore: 70, afterScore: -290, isSwingPoint: true, bestMoveSan: 'Re1', multiPvLines: [] },
+        { moveIndex: 22, label: '12... Qh4', san: 'Qh4', quality: '失误', centipawnLoss: 180, beforeScore: -40, afterScore: 140, isSwingPoint: true, bestMoveSan: 'Qc7', multiPvLines: [] },
+        { moveIndex: 48, label: '25. Kf2', san: 'Kf2', quality: '失误', centipawnLoss: 140, beforeScore: 0, afterScore: -160, isSwingPoint: true, bestMoveSan: 'Ke2', multiPvLines: [] },
       ],
       mistakeCards: [
         { tags: ['战术', '防守'], attempts: 3, solvedCount: 1 },
@@ -248,9 +252,9 @@ describe('review report helpers', () => {
     const report = buildReviewReport({
       opening: { eco: 'C60', name: 'Ruy Lopez', status: 'deviation', matchedPly: 5, deviationMove: 'h6', nextBookMove: 'a6' },
       analyses: [
-        { moveIndex: 3, label: '2... Nc6', san: 'Nc6', quality: '好棋', centipawnLoss: 20, beforeScore: 10, afterScore: 5, isSwingPoint: false, bestMoveSan: 'Nc6' },
-        { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', quality: '败着', centipawnLoss: 420, beforeScore: 80, afterScore: -360, isSwingPoint: true, bestMoveSan: 'Re1' },
-        { moveIndex: 46, label: '24... Ke1', san: 'Ke1', quality: '失误', centipawnLoss: 180, beforeScore: 0, afterScore: 220, isSwingPoint: true, bestMoveSan: 'Kd1' },
+        { moveIndex: 3, label: '2... Nc6', san: 'Nc6', quality: '好棋', centipawnLoss: 20, beforeScore: 10, afterScore: 5, isSwingPoint: false, bestMoveSan: 'Nc6', multiPvLines: [] },
+        { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', quality: '败着', centipawnLoss: 420, beforeScore: 80, afterScore: -360, isSwingPoint: true, bestMoveSan: 'Re1', multiPvLines: [] },
+        { moveIndex: 46, label: '24... Ke1', san: 'Ke1', quality: '失误', centipawnLoss: 180, beforeScore: 0, afterScore: 220, isSwingPoint: true, bestMoveSan: 'Kd1', multiPvLines: [] },
       ],
       middlegamePlan: {
         focusCards: [{
@@ -296,6 +300,7 @@ describe('endgame training helpers', () => {
           afterScore: 260,
           isSwingPoint: true,
           bestMoveSan: 'Kd1',
+          multiPvLines: [],
         },
       ],
     });
@@ -325,6 +330,7 @@ describe('middlegame plan training helpers', () => {
         afterScore: -55,
         isSwingPoint: false,
         bestMoveSan: 'Re1',
+        multiPvLines: [],
       },
       {
         moveIndex: 15,
@@ -336,6 +342,7 @@ describe('middlegame plan training helpers', () => {
         afterScore: 210,
         isSwingPoint: true,
         bestMoveSan: 'c6',
+        multiPvLines: [],
       },
       {
         moveIndex: 19,
@@ -347,6 +354,7 @@ describe('middlegame plan training helpers', () => {
         afterScore: 430,
         isSwingPoint: true,
         bestMoveSan: 'Re8',
+        multiPvLines: [],
       },
     ]);
 
@@ -360,6 +368,53 @@ describe('middlegame plan training helpers', () => {
     });
     expect(plan.themeStats.map((theme) => theme.theme)).toContain('王翼兵形/王安全');
     expect(plan.summary).toContain('2 个关键中局计划点');
+  });
+});
+
+describe('analysis controls, cache, and key moment helpers', () => {
+  it('maps one-click analysis depth presets to engine depth, timeout, multipv, and labels', () => {
+    expect(getAnalysisDepthPresetConfig('fast')).toMatchObject({ depth: 6, timeoutMs: 8000, multiPv: 1, label: '快速' });
+    expect(getAnalysisDepthPresetConfig('standard')).toMatchObject({ depth: 10, timeoutMs: 15000, multiPv: 2, label: '标准' });
+    expect(getAnalysisDepthPresetConfig('deep')).toMatchObject({ depth: 14, timeoutMs: 24000, multiPv: 3, label: '深度' });
+  });
+
+  it('builds stable cache keys from PGN and engine settings', () => {
+    expect(
+      buildGlobalAnalysisCacheKey({
+        pgnText: '1. e4 e5',
+        preset: 'standard',
+        depth: 10,
+        multiPv: 2,
+        engineMode: 'wasm',
+      }),
+    ).toBe('pgn=1. e4 e5|preset=standard|depth=10|multiPv=2|engine=wasm');
+  });
+
+  it('builds report rows with multipv lines and filters key training moments', () => {
+    const report = buildGlobalAnalysisReport({
+      moves: [
+        { san: 'e4', color: 'w' },
+        { san: 'e5', color: 'b' },
+        { san: 'Qh5', color: 'w' },
+      ],
+      positionScores: [20, 25, 240, -180],
+      bestMoves: ['e4', 'Nf6', 'Nc3'],
+      multiPvByMove: [
+        [{ rank: 1, score: { type: 'cp', value: 20 }, pv: ['e4', 'e5'] }],
+        [
+          { rank: 1, score: { type: 'cp', value: 25 }, pv: ['Nf6'] },
+          { rank: 2, score: { type: 'cp', value: 10 }, pv: ['e5'] },
+        ],
+        [{ rank: 1, score: { type: 'cp', value: 240 }, pv: ['Nc3'] }],
+      ],
+    });
+
+    expect(report[1]).toMatchObject({ san: 'e5', quality: '失误', bestMoveSan: 'Nf6' });
+    expect(report[1].multiPvLines).toHaveLength(2);
+    expect(report[1].multiPvLines[1]).toMatchObject({ rank: 2, pv: ['e5'] });
+
+    const keyMoments = filterGlobalAnalysisMoments(report, 'key');
+    expect(keyMoments.map((item) => item.san)).toEqual(['e5', 'Qh5']);
   });
 });
 

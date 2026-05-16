@@ -181,6 +181,23 @@ type MistakeCard = {
   updatedAt: string;
 };
 
+type AnalysisDepthPreset = 'fast' | 'standard' | 'deep';
+type GlobalAnalysisMomentFilter = 'all' | 'key';
+
+type AnalysisDepthPresetConfig = {
+  depth: number;
+  timeoutMs: number;
+  multiPv: number;
+  label: string;
+  description: string;
+};
+
+type MultiPvLine = {
+  rank: number;
+  score: StockfishAnalysis['score'];
+  pv: string[];
+};
+
 type GlobalMoveAnalysis = {
   moveIndex: number;
   label: string;
@@ -191,13 +208,19 @@ type GlobalMoveAnalysis = {
   afterScore: number | null;
   isSwingPoint: boolean;
   bestMoveSan: string;
+  multiPvLines: MultiPvLine[];
+};
+
+type StockfishInfoAnalysis = Partial<StockfishAnalysis> & {
+  multiPvLine?: MultiPvLine;
 };
 
 type EngineAnalysisRequest = {
   fen: string;
-  resolve: (analysis: StockfishAnalysis) => void;
+  resolve: (analysis: StockfishAnalysis & { multiPvLines: MultiPvLine[] }) => void;
   reject: (error: Error) => void;
   latest: Partial<StockfishAnalysis>;
+  multiPvLines: MultiPvLine[];
   timeoutId: number;
 };
 
@@ -342,7 +365,30 @@ const notesStorageKey = 'chess-me:position-notes:v1';
 const stockfishWorkerUrl = '/stockfish/stockfish-18-lite-single.js';
 const stockfishWasmUrl = '/stockfish/stockfish-18-lite-single.wasm';
 const stockfishAsmWorkerUrl = '/stockfish/stockfish-18-asm.js';
-const globalAnalysisDepth = 10;
+const analysisDepthPresets: Record<AnalysisDepthPreset, AnalysisDepthPresetConfig> = {
+  fast: {
+    depth: 6,
+    timeoutMs: 8000,
+    multiPv: 1,
+    label: '快速',
+    description: '快速巡检，适合先找明显战术问题。',
+  },
+  standard: {
+    depth: 10,
+    timeoutMs: 15000,
+    multiPv: 2,
+    label: '标准',
+    description: '平衡速度与准确度，并展示两个候选主线。',
+  },
+  deep: {
+    depth: 14,
+    timeoutMs: 24000,
+    multiPv: 3,
+    label: '深度',
+    description: '更长思考时间，适合赛后精细复盘。',
+  },
+};
+
 const swingPointThreshold = 150;
 const guessStatsStorageKey = 'chess-me:guess-stats:v1';
 const mistakeBookStorageKey = 'chess-me:mistake-book:v1';
@@ -641,6 +687,66 @@ function formatMoveLabel(move: Move, index: number) {
   return `${prefix} ${move.san}`;
 }
 
+function getAnalysisDepthPresetConfig(preset: AnalysisDepthPreset) {
+  return analysisDepthPresets[preset];
+}
+
+function buildGlobalAnalysisCacheKey({
+  pgnText,
+  preset,
+  depth,
+  multiPv,
+  engineMode,
+}: {
+  pgnText: string;
+  preset: AnalysisDepthPreset;
+  depth: number;
+  multiPv: number;
+  engineMode: EngineMode;
+}) {
+  return `pgn=${pgnText.trim()}|preset=${preset}|depth=${depth}|multiPv=${multiPv}|engine=${engineMode}`;
+}
+
+function buildGlobalAnalysisReport({
+  moves,
+  positionScores,
+  bestMoves,
+  multiPvByMove,
+}: {
+  moves: Array<Pick<Move, 'san' | 'color'>>;
+  positionScores: Array<number | null>;
+  bestMoves: string[];
+  multiPvByMove?: MultiPvLine[][];
+}): GlobalMoveAnalysis[] {
+  return moves.map((move, index) => {
+    const beforeScore = positionScores[index] ?? null;
+    const afterScore = positionScores[index + 1] ?? null;
+    const centipawnLoss = Math.round(getMoverCentipawnLossForColor(move.color, beforeScore, afterScore));
+    return {
+      moveIndex: index,
+      label: formatMoveLabel(move as Move, index),
+      san: move.san,
+      quality: classifyMoveFromEvaluationDrop(centipawnLoss),
+      centipawnLoss,
+      beforeScore,
+      afterScore,
+      isSwingPoint: detectSwingPoint(beforeScore, afterScore, centipawnLoss),
+      bestMoveSan: bestMoves[index] ?? '',
+      multiPvLines: multiPvByMove?.[index] ?? [],
+    };
+  });
+}
+
+function filterGlobalAnalysisMoments(analyses: GlobalMoveAnalysis[], filter: GlobalAnalysisMomentFilter) {
+  if (filter === 'all') {
+    return analyses;
+  }
+
+  return analyses.filter(
+    (item) => item.isSwingPoint || item.quality === '疑问手' || item.quality === '失误' || item.quality === '败着',
+  );
+}
+
 function formatVariationMoveLabel(move: Move) {
   const [, , , , , fullMove] = move.before.split(' ');
   const prefix = move.color === 'w' ? `${fullMove}.` : `${fullMove}...`;
@@ -732,7 +838,7 @@ function isPromotionMove(fen: string, from: Square, to: Square) {
     .some((move) => move.to === to && Boolean(move.promotion));
 }
 
-function parseStockfishInfo(line: string, fen: string): Partial<StockfishAnalysis> | null {
+function parseStockfishInfo(line: string, fen: string): StockfishInfoAnalysis | null {
   if (!line.startsWith('info ') || !line.includes(' score ') || !line.includes(' pv ')) {
     return null;
   }
@@ -758,10 +864,19 @@ function parseStockfishInfo(line: string, fen: string): Partial<StockfishAnalysi
     };
   }
 
+  const multipvMatch = line.match(/\bmultipv (\d+)/);
+  const rank = multipvMatch ? Number(multipvMatch[1]) : 1;
+  const multiPvLine: MultiPvLine = {
+    rank,
+    score,
+    pv: pvMatch ? formatPrincipalVariation(fen, pvMatch[1].split(/\s+/).slice(0, 8)) : [],
+  };
+
   return {
     depth: depthMatch ? Number(depthMatch[1]) : 0,
     score,
-    pv: pvMatch ? formatPrincipalVariation(fen, pvMatch[1].split(/\s+/).slice(0, 8)) : [],
+    pv: multiPvLine.pv,
+    multiPvLine,
   };
 }
 
@@ -1684,14 +1799,18 @@ function detectSwingPoint(beforeScore: number | null, afterScore: number | null,
   return centipawnLoss >= swingPointThreshold || crossedBalance;
 }
 
-function getMoverCentipawnLoss(move: Move, beforeScore: number | null, afterScore: number | null) {
+function getMoverCentipawnLossForColor(color: Color, beforeScore: number | null, afterScore: number | null) {
   if (beforeScore === null || afterScore === null) {
     return 0;
   }
 
   const deltaForWhite = afterScore - beforeScore;
-  const moverDelta = move.color === 'w' ? deltaForWhite : -deltaForWhite;
+  const moverDelta = color === 'w' ? deltaForWhite : -deltaForWhite;
   return Math.max(0, -moverDelta);
+}
+
+function getMoverCentipawnLoss(move: Move, beforeScore: number | null, afterScore: number | null) {
+  return getMoverCentipawnLossForColor(move.color, beforeScore, afterScore);
 }
 
 function loadStoredGuessStats(): GuessStats {
@@ -2086,6 +2205,11 @@ function App() {
   const [globalAnalysis, setGlobalAnalysis] = useState<GlobalMoveAnalysis[]>([]);
   const [isGlobalAnalyzing, setIsGlobalAnalyzing] = useState(false);
   const [globalAnalysisProgress, setGlobalAnalysisProgress] = useState('');
+  const [analysisDepthPreset, setAnalysisDepthPreset] = useState<AnalysisDepthPreset>('standard');
+  const [globalAnalysisFilter, setGlobalAnalysisFilter] = useState<GlobalAnalysisMomentFilter>('all');
+  const [globalAnalysisCacheStatus, setGlobalAnalysisCacheStatus] = useState('尚未分析');
+  const globalAnalysisCancelRef = useRef(false);
+  const globalAnalysisCacheRef = useRef(new Map<string, GlobalMoveAnalysis[]>());
   const engineRef = useRef<Worker | null>(null);
   const engineReadyRef = useRef(false);
   const engineReadyTimerRef = useRef<number | null>(null);
@@ -2277,7 +2401,12 @@ function App() {
       const pendingRequest = engineRequestRef.current;
       const partialAnalysis = parseStockfishInfo(line, currentFen);
       if (partialAnalysis) {
+        const multiPvLine = 'multiPvLine' in partialAnalysis ? partialAnalysis.multiPvLine : undefined;
         if (pendingRequest) {
+          if (multiPvLine) {
+            const nextLines = pendingRequest.multiPvLines.filter((line) => line.rank !== multiPvLine.rank);
+            pendingRequest.multiPvLines = [...nextLines, multiPvLine].sort((a, b) => a.rank - b.rank);
+          }
           pendingRequest.latest = {
             ...pendingRequest.latest,
             ...partialAnalysis,
@@ -2294,21 +2423,23 @@ function App() {
       }
 
       if (line.startsWith('bestmove ')) {
+        const requestForBestMove = pendingRequest;
         const bestMove = line.split(/\s+/)[1] ?? '';
         const bestMoveSan = formatBestMove(currentFen, bestMove);
         addEngineLog(`bestmove ${bestMove}`);
-        const completedAnalysis: StockfishAnalysis = {
-          depth: pendingRequest?.latest.depth ?? 0,
-          score: pendingRequest?.latest.score ?? null,
-          pv: pendingRequest?.latest.pv ?? [],
+        const completedAnalysis: StockfishAnalysis & { multiPvLines: MultiPvLine[] } = {
+          depth: requestForBestMove?.latest.depth ?? 0,
+          score: requestForBestMove?.latest.score ?? null,
+          pv: requestForBestMove?.multiPvLines[0]?.pv ?? requestForBestMove?.latest.pv ?? [],
           bestMove,
           bestMoveSan,
+          multiPvLines: requestForBestMove?.multiPvLines ?? [],
         };
 
-        if (pendingRequest) {
-          window.clearTimeout(pendingRequest.timeoutId);
+        if (requestForBestMove) {
+          window.clearTimeout(requestForBestMove.timeoutId);
           engineRequestRef.current = null;
-          pendingRequest.resolve(completedAnalysis);
+          requestForBestMove.resolve(completedAnalysis);
         }
 
         setAnalysis(completedAnalysis);
@@ -2389,8 +2520,8 @@ function App() {
     }
   };
 
-  const analyzeFenOnce = (fen: string, depth = globalAnalysisDepth) =>
-    new Promise<StockfishAnalysis>((resolve, reject) => {
+  const analyzeFenOnce = (fen: string, config = getAnalysisDepthPresetConfig(analysisDepthPreset)) =>
+    new Promise<StockfishAnalysis & { multiPvLines: MultiPvLine[] }>((resolve, reject) => {
       const engine = getEngine();
       if (engineRequestRef.current) {
         window.clearTimeout(engineRequestRef.current.timeoutId);
@@ -2402,21 +2533,23 @@ function App() {
           engineRequestRef.current = null;
           reject(new Error('Stockfish 分析超时。'));
         }
-      }, 15000);
+      }, config.timeoutMs);
 
       engineRequestRef.current = {
         fen,
-        resolve,
+        resolve: (analysis) => resolve({ ...analysis, multiPvLines: engineRequestRef.current?.multiPvLines ?? [] }),
         reject,
         latest: {},
+        multiPvLines: [],
         timeoutId,
       };
       analysisFenRef.current = fen;
       setEngineStatus('analyzing');
       engine.postMessage('stop');
       engine.postMessage('ucinewgame');
+      engine.postMessage(`setoption name MultiPV value ${config.multiPv}`);
       engine.postMessage(`position fen ${fen}`);
-      engine.postMessage(`go depth ${depth}`);
+      engine.postMessage(`go depth ${config.depth}`);
     });
 
   useEffect(() => {
@@ -2593,68 +2726,110 @@ function App() {
     setMistakeCards((cards) => cards.filter((card) => card.id !== id));
   };
 
-  const runGlobalAnalysis = async () => {
+  const runGlobalAnalysis = async (forceRefresh = false) => {
     if (mode !== 'pgn' || result.moves.length === 0 || result.error) {
       showToast({ type: 'error', text: '请先导入包含走法的 PGN 棋谱。' });
       return;
     }
 
+    const config = getAnalysisDepthPresetConfig(analysisDepthPreset);
+    const cacheKey = buildGlobalAnalysisCacheKey({
+      pgnText: text,
+      preset: analysisDepthPreset,
+      depth: config.depth,
+      multiPv: config.multiPv,
+      engineMode: engineModeRef.current,
+    });
+    const cached = globalAnalysisCacheRef.current.get(cacheKey);
+    if (cached && !forceRefresh) {
+      setGlobalAnalysis(cached);
+      setGlobalAnalysisProgress(`缓存命中：${config.label}分析，深度 ${config.depth}，MultiPV ${config.multiPv}。`);
+      setGlobalAnalysisCacheStatus('缓存命中');
+      showToast({ type: 'success', text: '已载入缓存分析结果。' });
+      return;
+    }
+
+    globalAnalysisCancelRef.current = false;
     setIsGlobalAnalyzing(true);
     setGlobalAnalysis([]);
-    setGlobalAnalysisProgress('准备分析整盘棋…');
+    setGlobalAnalysisProgress(`准备${config.label}分析：深度 ${config.depth}，MultiPV ${config.multiPv}…`);
+    setGlobalAnalysisCacheStatus(forceRefresh ? '强制刷新中' : '缓存未命中');
     setIsAnalysisEnabled(false);
 
     try {
-      const positionScores = new Map<number, number | null>();
-      const bestMovesByIndex = new Map<number, string>();
+      const positionScores: Array<number | null> = [];
+      const bestMoves: string[] = [];
+      const multiPvByMove: MultiPvLine[][] = [];
 
       for (let index = 0; index < result.moves.length; index += 1) {
+        if (globalAnalysisCancelRef.current) {
+          throw new Error('整盘分析已取消。');
+        }
+
         const beforeFen = result.positions[index]?.fen;
         if (!beforeFen) {
           continue;
         }
 
-        setGlobalAnalysisProgress(`分析第 ${index + 1}/${result.moves.length} 手之前局面…`);
-        const beforeAnalysis = await analyzeFenOnce(beforeFen);
-        positionScores.set(index, scoreToWhiteCentipawns(beforeAnalysis.score));
-        bestMovesByIndex.set(index, beforeAnalysis.bestMoveSan || beforeAnalysis.bestMove);
+        setGlobalAnalysisProgress(`${config.label}分析第 ${index + 1}/${result.moves.length} 手之前局面（深度 ${config.depth}）…`);
+        const beforeAnalysis = await analyzeFenOnce(beforeFen, config);
+        positionScores[index] = scoreToWhiteCentipawns(beforeAnalysis.score);
+        bestMoves[index] = beforeAnalysis.bestMoveSan || beforeAnalysis.bestMove;
+        multiPvByMove[index] = beforeAnalysis.multiPvLines;
+      }
+
+      if (globalAnalysisCancelRef.current) {
+        throw new Error('整盘分析已取消。');
       }
 
       const finalFen = result.positions[result.moves.length]?.fen;
       if (finalFen) {
         setGlobalAnalysisProgress('分析终局局面…');
-        const finalAnalysis = await analyzeFenOnce(finalFen);
-        positionScores.set(result.moves.length, scoreToWhiteCentipawns(finalAnalysis.score));
+        const finalAnalysis = await analyzeFenOnce(finalFen, config);
+        positionScores[result.moves.length] = scoreToWhiteCentipawns(finalAnalysis.score);
       }
 
-      const report = result.moves.map((move, index) => {
-        const beforeScore = positionScores.get(index) ?? null;
-        const afterScore = positionScores.get(index + 1) ?? null;
-        const centipawnLoss = Math.round(getMoverCentipawnLoss(move, beforeScore, afterScore));
-        return {
-          moveIndex: index,
-          label: formatMoveLabel(move, index),
-          san: move.san,
-          quality: classifyMoveFromEvaluationDrop(centipawnLoss),
-          centipawnLoss,
-          beforeScore,
-          afterScore,
-          isSwingPoint: detectSwingPoint(beforeScore, afterScore, centipawnLoss),
-          bestMoveSan: bestMovesByIndex.get(index) ?? '',
-        };
+      const report = buildGlobalAnalysisReport({
+        moves: result.moves,
+        positionScores,
+        bestMoves,
+        multiPvByMove,
       });
 
+      globalAnalysisCacheRef.current.set(cacheKey, report);
       setGlobalAnalysis(report);
-      setGlobalAnalysisProgress(`完成：已分析 ${report.length} 手。`);
+      setGlobalAnalysisProgress(`完成：${config.label}分析 ${report.length} 手，深度 ${config.depth}，MultiPV ${config.multiPv}。`);
+      setGlobalAnalysisCacheStatus('已写入缓存');
       setEngineStatus('ready');
       showToast({ type: 'success', text: '整盘棋分析完成。' });
     } catch (error) {
-      setGlobalAnalysisProgress(error instanceof Error ? error.message : '整盘棋分析失败。');
-      setEngineStatus('error');
-      showToast({ type: 'error', text: '整盘棋分析失败，请稍后重试。' });
+      if (globalAnalysisCancelRef.current || (error instanceof Error && error.message.includes('已取消'))) {
+        setGlobalAnalysisProgress('已取消：保留取消前已有结果，Worker 已停止。');
+        setGlobalAnalysisCacheStatus('已取消');
+        setEngineStatus(engineRef.current ? 'ready' : 'idle');
+        showToast({ type: 'error', text: '整盘分析已取消。' });
+      } else {
+        setGlobalAnalysisProgress(error instanceof Error ? error.message : '整盘棋分析失败。');
+        setEngineStatus('error');
+        showToast({ type: 'error', text: '整盘棋分析失败，请稍后重试。' });
+      }
     } finally {
       setIsGlobalAnalyzing(false);
+      globalAnalysisCancelRef.current = false;
     }
+  };
+
+  const cancelGlobalAnalysis = () => {
+    globalAnalysisCancelRef.current = true;
+    if (engineRequestRef.current) {
+      window.clearTimeout(engineRequestRef.current.timeoutId);
+      engineRequestRef.current.reject(new Error('整盘分析已取消。'));
+      engineRequestRef.current = null;
+    }
+    engineRef.current?.postMessage('stop');
+    setIsGlobalAnalyzing(false);
+    setGlobalAnalysisProgress('正在取消整盘分析…');
+    setEngineStatus(engineRef.current ? 'ready' : 'idle');
   };
 
   const updatePositionIndex = (nextIndex: number | ((index: number) => number)) => {
@@ -3083,7 +3258,15 @@ function App() {
             isAnalyzing={isGlobalAnalyzing}
             progress={globalAnalysisProgress}
             canAnalyze={mode === 'pgn' && result.moves.length > 0 && !result.error}
-            onAnalyze={runGlobalAnalysis}
+            depthPreset={analysisDepthPreset}
+            presetConfig={getAnalysisDepthPresetConfig(analysisDepthPreset)}
+            momentFilter={globalAnalysisFilter}
+            cacheStatus={globalAnalysisCacheStatus}
+            onDepthPresetChange={setAnalysisDepthPreset}
+            onMomentFilterChange={setGlobalAnalysisFilter}
+            onAnalyze={() => runGlobalAnalysis(false)}
+            onRefresh={() => runGlobalAnalysis(true)}
+            onCancel={cancelGlobalAnalysis}
             onSelectMove={(index) => updatePositionIndex(index + 1)}
           />
 
@@ -3826,17 +4009,34 @@ function GlobalAnalysisPanel({
   isAnalyzing,
   progress,
   canAnalyze,
+  depthPreset,
+  presetConfig,
+  momentFilter,
+  cacheStatus,
+  onDepthPresetChange,
+  onMomentFilterChange,
   onAnalyze,
+  onRefresh,
+  onCancel,
   onSelectMove,
 }: {
   analyses: GlobalMoveAnalysis[];
   isAnalyzing: boolean;
   progress: string;
   canAnalyze: boolean;
+  depthPreset: AnalysisDepthPreset;
+  presetConfig: AnalysisDepthPresetConfig;
+  momentFilter: GlobalAnalysisMomentFilter;
+  cacheStatus: string;
+  onDepthPresetChange: (preset: AnalysisDepthPreset) => void;
+  onMomentFilterChange: (filter: GlobalAnalysisMomentFilter) => void;
   onAnalyze: () => void;
+  onRefresh: () => void;
+  onCancel: () => void;
   onSelectMove: (moveIndex: number) => void;
 }) {
   const swingPoints = analyses.filter((item) => item.isSwingPoint);
+  const visibleAnalyses = filterGlobalAnalysisMoments(analyses, momentFilter);
 
   return (
     <section className="global-analysis-panel" aria-label="一键全局分析">
@@ -3844,11 +4044,49 @@ function GlobalAnalysisPanel({
         <div>
           <span>一键全局分析</span>
           <p>{progress || '自动分析整盘棋，为每一步打标签并标出局势突变点。'}</p>
+          <small>{presetConfig.label} · 深度 {presetConfig.depth} · MultiPV {presetConfig.multiPv} · {cacheStatus}</small>
         </div>
-        <button type="button" onClick={onAnalyze} disabled={!canAnalyze || isAnalyzing}>
-          {isAnalyzing ? '分析中…' : '分析整盘'}
-        </button>
+        <div className="global-analysis-actions">
+          <button type="button" onClick={onAnalyze} disabled={!canAnalyze || isAnalyzing}>
+            {isAnalyzing ? '分析中…' : '分析整盘'}
+          </button>
+          <button type="button" onClick={onRefresh} disabled={!canAnalyze || isAnalyzing}>
+            刷新分析
+          </button>
+          <button type="button" onClick={onCancel} disabled={!isAnalyzing}>
+            取消
+          </button>
+        </div>
       </div>
+
+      <div className="analysis-control-row">
+        <div className="analysis-depth-controls" aria-label="分析深度选择">
+          {(['fast', 'standard', 'deep'] as AnalysisDepthPreset[]).map((preset) => {
+            const config = getAnalysisDepthPresetConfig(preset);
+            return (
+              <button
+                type="button"
+                key={preset}
+                className={depthPreset === preset ? 'active' : ''}
+                onClick={() => onDepthPresetChange(preset)}
+                disabled={isAnalyzing}
+              >
+                {config.label} · D{config.depth}
+              </button>
+            );
+          })}
+        </div>
+        <div className="analysis-filter-controls" aria-label="关键时刻筛选">
+          <button type="button" className={momentFilter === 'all' ? 'active' : ''} onClick={() => onMomentFilterChange('all')}>
+            全部
+          </button>
+          <button type="button" className={momentFilter === 'key' ? 'active' : ''} onClick={() => onMomentFilterChange('key')}>
+            关键时刻
+          </button>
+        </div>
+      </div>
+
+      <p className="analysis-preset-help">{presetConfig.description}</p>
 
       {swingPoints.length > 0 && (
         <div className="swing-summary">
@@ -3857,9 +4095,9 @@ function GlobalAnalysisPanel({
         </div>
       )}
 
-      {analyses.length > 0 && (
+      {visibleAnalyses.length > 0 && (
         <div className="global-analysis-list">
-          {analyses.map((item) => (
+          {visibleAnalyses.map((item) => (
             <button
               type="button"
               key={`${item.moveIndex}-${item.san}`}
@@ -3870,6 +4108,11 @@ function GlobalAnalysisPanel({
               <span className="analysis-quality">{item.quality}</span>
               <span className="analysis-loss">损失 {item.centipawnLoss} cp</span>
               <span className="analysis-best">首选 {item.bestMoveSan || '-'}</span>
+              {item.multiPvLines.length > 0 && (
+                <span className="analysis-multipv">
+                  {item.multiPvLines.map((line) => `#${line.rank} ${line.pv.join(' ') || '-'}`).join(' ｜ ')}
+                </span>
+              )}
               {item.isSwingPoint && <strong>突变</strong>}
             </button>
           ))}
@@ -4402,7 +4645,11 @@ export {
   buildReviewReport,
   buildStrengthProfile,
   buildBulkPgnLibraryInsights,
+  buildGlobalAnalysisCacheKey,
+  buildGlobalAnalysisReport,
   buildMiddlegamePlanTraining,
+  filterGlobalAnalysisMoments,
+  getAnalysisDepthPresetConfig,
   getPgnReplyAfterCorrectGuess,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
