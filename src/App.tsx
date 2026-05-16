@@ -224,6 +224,12 @@ type EngineAnalysisRequest = {
   timeoutId: number;
 };
 
+type CompletedEngineAnalysisInput = {
+  request: Pick<EngineAnalysisRequest, 'latest' | 'multiPvLines'> | null | undefined;
+  bestMove: string;
+  bestMoveSan: string;
+};
+
 type OpeningEntry = {
   eco: string;
   name: string;
@@ -761,7 +767,7 @@ function buildGlobalAnalysisCancellationPlan({
     nextAnalysis: existingAnalysis,
     nextIsAnalyzing: false,
     nextCancelToken: false,
-    nextProgress: `已取消：${hasWorker ? 'Worker 已停止，' : ''}保留取消前已有结果。`,
+    nextProgress: `已取消：${hasWorker ? 'Worker 已停止；' : ''}上一次已完成分析不会被本次取消污染。`,
     nextError: '',
     nextEngineStatus: hasWorker ? 'ready' : 'idle',
     nextButtonLabel: '分析整盘',
@@ -897,6 +903,19 @@ function isPromotionMove(fen: string, from: Square, to: Square) {
   return game
     .moves({ square: from, verbose: true })
     .some((move) => move.to === to && Boolean(move.promotion));
+}
+
+function completeEngineAnalysisFromRequest({ request, bestMove, bestMoveSan }: CompletedEngineAnalysisInput): StockfishAnalysis & { multiPvLines: MultiPvLine[] } {
+  const multiPvLines = request?.multiPvLines ?? [];
+
+  return {
+    depth: request?.latest.depth ?? 0,
+    score: request?.latest.score ?? null,
+    pv: multiPvLines[0]?.pv ?? request?.latest.pv ?? [],
+    bestMove,
+    bestMoveSan,
+    multiPvLines,
+  };
 }
 
 function parseStockfishInfo(line: string, fen: string): StockfishInfoAnalysis | null {
@@ -2489,14 +2508,11 @@ function App() {
         const bestMove = line.split(/\s+/)[1] ?? '';
         const bestMoveSan = formatBestMove(currentFen, bestMove);
         addEngineLog(`bestmove ${bestMove}`);
-        const completedAnalysis: StockfishAnalysis & { multiPvLines: MultiPvLine[] } = {
-          depth: requestForBestMove?.latest.depth ?? 0,
-          score: requestForBestMove?.latest.score ?? null,
-          pv: requestForBestMove?.multiPvLines[0]?.pv ?? requestForBestMove?.latest.pv ?? [],
+        const completedAnalysis = completeEngineAnalysisFromRequest({
+          request: requestForBestMove,
           bestMove,
           bestMoveSan,
-          multiPvLines: requestForBestMove?.multiPvLines ?? [],
-        };
+        });
 
         if (requestForBestMove) {
           window.clearTimeout(requestForBestMove.timeoutId);
@@ -2599,7 +2615,7 @@ function App() {
 
       engineRequestRef.current = {
         fen,
-        resolve: (analysis) => resolve({ ...analysis, multiPvLines: engineRequestRef.current?.multiPvLines ?? [] }),
+        resolve: (analysis) => resolve(analysis),
         reject,
         latest: {},
         multiPvLines: [],
@@ -2870,7 +2886,7 @@ function App() {
     } catch (error) {
       if (globalAnalysisCancelRef.current || (error instanceof Error && error.message.includes('已取消'))) {
         setGlobalAnalysisError('');
-        setGlobalAnalysisProgress('已取消：保留取消前已有结果，Worker 已停止。');
+        setGlobalAnalysisProgress('已取消：上一次已完成分析不会被本次取消污染，Worker 已停止。');
         setGlobalAnalysisCacheStatus('已取消');
         setEngineStatus(engineRef.current ? 'ready' : 'idle');
         showToast({ type: 'error', text: '整盘分析已取消。' });
@@ -2940,6 +2956,7 @@ function App() {
     setGlobalAnalysis([]);
     setGlobalAnalysisError('');
     setGlobalAnalysisProgress('');
+    setGlobalAnalysisCacheStatus('尚未分析');
     setBulkPgnLibrary(null);
   };
 
@@ -2954,6 +2971,7 @@ function App() {
     setGlobalAnalysis([]);
     setGlobalAnalysisError('');
     setGlobalAnalysisProgress('');
+    setGlobalAnalysisCacheStatus('尚未分析');
     setBulkPgnLibrary(null);
   };
 
@@ -3351,7 +3369,10 @@ function App() {
             presetConfig={getAnalysisDepthPresetConfig(analysisDepthPreset)}
             momentFilter={globalAnalysisFilter}
             cacheStatus={globalAnalysisCacheStatus}
-            onDepthPresetChange={setAnalysisDepthPreset}
+            onDepthPresetChange={(preset) => {
+              setAnalysisDepthPreset(preset);
+              setGlobalAnalysisCacheStatus('尚未分析');
+            }}
             onMomentFilterChange={setGlobalAnalysisFilter}
             onAnalyze={() => runGlobalAnalysis(false)}
             onRefresh={() => runGlobalAnalysis(true)}
@@ -4738,6 +4759,7 @@ export {
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisReport,
   buildMiddlegamePlanTraining,
+  completeEngineAnalysisFromRequest,
   filterGlobalAnalysisMoments,
   getAnalysisDepthPresetConfig,
   getPgnReplyAfterCorrectGuess,

@@ -14,6 +14,7 @@ import {
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisReport,
+  completeEngineAnalysisFromRequest,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
   getAnalysisDepthPresetConfig,
@@ -418,6 +419,35 @@ describe('analysis controls, cache, and key moment helpers', () => {
     expect(keyMoments.map((item) => item.san)).toEqual(['e5', 'Qh5']);
   });
 
+  it('preserves completed MultiPV lines when an engine request resolves after the active ref is cleared', () => {
+    const completed = completeEngineAnalysisFromRequest({
+      request: {
+        latest: {
+          depth: 10,
+          score: { type: 'cp', value: 25 },
+          pv: ['Nf6'],
+        },
+        multiPvLines: [
+          { rank: 1, score: { type: 'cp', value: 25 }, pv: ['Nf6'] },
+          { rank: 2, score: { type: 'cp', value: 10 }, pv: ['e5'] },
+        ],
+      },
+      bestMove: 'g8f6',
+      bestMoveSan: 'Nf6',
+    });
+
+    const report = buildGlobalAnalysisReport({
+      moves: [{ san: 'e5', color: 'b' }],
+      positionScores: [20, 100],
+      bestMoves: [completed.bestMoveSan],
+      multiPvByMove: [completed.multiPvLines],
+    });
+
+    expect(completed.multiPvLines).toHaveLength(2);
+    expect(report[0].multiPvLines).toEqual(completed.multiPvLines);
+    expect(report[0].multiPvLines[1]).toMatchObject({ rank: 2, pv: ['e5'] });
+  });
+
   it('keeps cancellation disabled before analysis starts so idle buttons cannot reset state by mistake', () => {
     const existingAnalysis = [
       {
@@ -483,7 +513,7 @@ describe('analysis controls, cache, and key moment helpers', () => {
       shouldMarkCanceled: true,
       shouldKeepExistingAnalysis: true,
       nextIsAnalyzing: false,
-      nextProgress: '已取消：Worker 已停止，保留取消前已有结果。',
+      nextProgress: '已取消：Worker 已停止；上一次已完成分析不会被本次取消污染。',
       nextError: '',
       nextEngineStatus: 'ready',
       nextButtonLabel: '分析整盘',
