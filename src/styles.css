@@ -619,6 +619,15 @@ h2 {
   color: #ffffff;
 }
 
+.analysis-cancel-button:not(:disabled) {
+  border-color: rgba(169, 68, 66, 0.38);
+  color: #a94442;
+}
+
+.analysis-cancel-button:not(:disabled):hover {
+  background: #fff1ef;
+}
+
 .analysis-preset-help {
   margin: 0;
 }

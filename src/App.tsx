@@ -707,6 +707,67 @@ function buildGlobalAnalysisCacheKey({
   return `pgn=${pgnText.trim()}|preset=${preset}|depth=${depth}|multiPv=${multiPv}|engine=${engineMode}`;
 }
 
+type GlobalAnalysisCancellationPlan = {
+  canCancel: boolean;
+  shouldStopWorker: boolean;
+  shouldRejectPendingRequest: boolean;
+  shouldMarkCanceled: boolean;
+  shouldKeepExistingAnalysis: boolean;
+  nextAnalysis: GlobalMoveAnalysis[];
+  nextIsAnalyzing: boolean;
+  nextCancelToken: boolean;
+  nextProgress: string;
+  nextError: string;
+  nextEngineStatus: EngineStatus;
+  nextButtonLabel: string;
+};
+
+function buildGlobalAnalysisCancellationPlan({
+  isAnalyzing,
+  hasWorker,
+  hasPendingRequest,
+  existingAnalysis,
+  currentError = '',
+}: {
+  isAnalyzing: boolean;
+  hasWorker: boolean;
+  hasPendingRequest: boolean;
+  existingAnalysis: GlobalMoveAnalysis[];
+  currentError?: string;
+}): GlobalAnalysisCancellationPlan {
+  if (!isAnalyzing) {
+    return {
+      canCancel: false,
+      shouldStopWorker: false,
+      shouldRejectPendingRequest: false,
+      shouldMarkCanceled: false,
+      shouldKeepExistingAnalysis: true,
+      nextAnalysis: existingAnalysis,
+      nextIsAnalyzing: false,
+      nextCancelToken: false,
+      nextProgress: currentError || '尚未开始整盘分析。',
+      nextError: currentError,
+      nextEngineStatus: hasWorker ? 'ready' : 'idle',
+      nextButtonLabel: '取消',
+    };
+  }
+
+  return {
+    canCancel: true,
+    shouldStopWorker: true,
+    shouldRejectPendingRequest: hasPendingRequest,
+    shouldMarkCanceled: true,
+    shouldKeepExistingAnalysis: true,
+    nextAnalysis: existingAnalysis,
+    nextIsAnalyzing: false,
+    nextCancelToken: false,
+    nextProgress: `已取消：${hasWorker ? 'Worker 已停止，' : ''}保留取消前已有结果。`,
+    nextError: '',
+    nextEngineStatus: hasWorker ? 'ready' : 'idle',
+    nextButtonLabel: '分析整盘',
+  };
+}
+
 function buildGlobalAnalysisReport({
   moves,
   positionScores,
@@ -2208,6 +2269,7 @@ function App() {
   const [analysisDepthPreset, setAnalysisDepthPreset] = useState<AnalysisDepthPreset>('standard');
   const [globalAnalysisFilter, setGlobalAnalysisFilter] = useState<GlobalAnalysisMomentFilter>('all');
   const [globalAnalysisCacheStatus, setGlobalAnalysisCacheStatus] = useState('尚未分析');
+  const [globalAnalysisError, setGlobalAnalysisError] = useState('');
   const globalAnalysisCancelRef = useRef(false);
   const globalAnalysisCacheRef = useRef(new Map<string, GlobalMoveAnalysis[]>());
   const engineRef = useRef<Worker | null>(null);
@@ -2743,6 +2805,7 @@ function App() {
     const cached = globalAnalysisCacheRef.current.get(cacheKey);
     if (cached && !forceRefresh) {
       setGlobalAnalysis(cached);
+      setGlobalAnalysisError('');
       setGlobalAnalysisProgress(`缓存命中：${config.label}分析，深度 ${config.depth}，MultiPV ${config.multiPv}。`);
       setGlobalAnalysisCacheStatus('缓存命中');
       showToast({ type: 'success', text: '已载入缓存分析结果。' });
@@ -2752,6 +2815,7 @@ function App() {
     globalAnalysisCancelRef.current = false;
     setIsGlobalAnalyzing(true);
     setGlobalAnalysis([]);
+    setGlobalAnalysisError('');
     setGlobalAnalysisProgress(`准备${config.label}分析：深度 ${config.depth}，MultiPV ${config.multiPv}…`);
     setGlobalAnalysisCacheStatus(forceRefresh ? '强制刷新中' : '缓存未命中');
     setIsAnalysisEnabled(false);
@@ -2798,18 +2862,22 @@ function App() {
 
       globalAnalysisCacheRef.current.set(cacheKey, report);
       setGlobalAnalysis(report);
+      setGlobalAnalysisError('');
       setGlobalAnalysisProgress(`完成：${config.label}分析 ${report.length} 手，深度 ${config.depth}，MultiPV ${config.multiPv}。`);
       setGlobalAnalysisCacheStatus('已写入缓存');
       setEngineStatus('ready');
       showToast({ type: 'success', text: '整盘棋分析完成。' });
     } catch (error) {
       if (globalAnalysisCancelRef.current || (error instanceof Error && error.message.includes('已取消'))) {
+        setGlobalAnalysisError('');
         setGlobalAnalysisProgress('已取消：保留取消前已有结果，Worker 已停止。');
         setGlobalAnalysisCacheStatus('已取消');
         setEngineStatus(engineRef.current ? 'ready' : 'idle');
         showToast({ type: 'error', text: '整盘分析已取消。' });
       } else {
-        setGlobalAnalysisProgress(error instanceof Error ? error.message : '整盘棋分析失败。');
+        const errorMessage = error instanceof Error ? error.message : '整盘棋分析失败。';
+        setGlobalAnalysisError(errorMessage);
+        setGlobalAnalysisProgress(errorMessage);
         setEngineStatus('error');
         showToast({ type: 'error', text: '整盘棋分析失败，请稍后重试。' });
       }
@@ -2820,16 +2888,35 @@ function App() {
   };
 
   const cancelGlobalAnalysis = () => {
-    globalAnalysisCancelRef.current = true;
-    if (engineRequestRef.current) {
+    const cancellationPlan = buildGlobalAnalysisCancellationPlan({
+      isAnalyzing: isGlobalAnalyzing,
+      hasWorker: Boolean(engineRef.current),
+      hasPendingRequest: Boolean(engineRequestRef.current),
+      existingAnalysis: globalAnalysis,
+      currentError: globalAnalysisError,
+    });
+
+    if (!cancellationPlan.canCancel) {
+      setGlobalAnalysisProgress(cancellationPlan.nextProgress);
+      setEngineStatus(cancellationPlan.nextEngineStatus);
+      return;
+    }
+
+    globalAnalysisCancelRef.current = cancellationPlan.shouldMarkCanceled;
+    if (cancellationPlan.shouldRejectPendingRequest && engineRequestRef.current) {
       window.clearTimeout(engineRequestRef.current.timeoutId);
       engineRequestRef.current.reject(new Error('整盘分析已取消。'));
       engineRequestRef.current = null;
     }
-    engineRef.current?.postMessage('stop');
-    setIsGlobalAnalyzing(false);
-    setGlobalAnalysisProgress('正在取消整盘分析…');
-    setEngineStatus(engineRef.current ? 'ready' : 'idle');
+    if (cancellationPlan.shouldStopWorker) {
+      engineRef.current?.postMessage('stop');
+    }
+    setGlobalAnalysis(cancellationPlan.nextAnalysis);
+    setIsGlobalAnalyzing(cancellationPlan.nextIsAnalyzing);
+    setGlobalAnalysisError(cancellationPlan.nextError);
+    setGlobalAnalysisProgress(cancellationPlan.nextProgress);
+    setGlobalAnalysisCacheStatus('已取消');
+    setEngineStatus(cancellationPlan.nextEngineStatus);
   };
 
   const updatePositionIndex = (nextIndex: number | ((index: number) => number)) => {
@@ -2851,6 +2938,7 @@ function App() {
     setPendingPromotion(null);
     setGuessResult(null);
     setGlobalAnalysis([]);
+    setGlobalAnalysisError('');
     setGlobalAnalysisProgress('');
     setBulkPgnLibrary(null);
   };
@@ -2864,6 +2952,7 @@ function App() {
     setPendingPromotion(null);
     setGuessResult(null);
     setGlobalAnalysis([]);
+    setGlobalAnalysisError('');
     setGlobalAnalysisProgress('');
     setBulkPgnLibrary(null);
   };
@@ -4053,8 +4142,8 @@ function GlobalAnalysisPanel({
           <button type="button" onClick={onRefresh} disabled={!canAnalyze || isAnalyzing}>
             刷新分析
           </button>
-          <button type="button" onClick={onCancel} disabled={!isAnalyzing}>
-            取消
+          <button type="button" className="analysis-cancel-button" onClick={onCancel} disabled={!isAnalyzing} aria-label={isAnalyzing ? '取消当前整盘分析' : '整盘分析未运行，无法取消'}>
+            {isAnalyzing ? '取消分析' : '取消'}
           </button>
         </div>
       </div>
@@ -4646,6 +4735,7 @@ export {
   buildStrengthProfile,
   buildBulkPgnLibraryInsights,
   buildGlobalAnalysisCacheKey,
+  buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisReport,
   buildMiddlegamePlanTraining,
   filterGlobalAnalysisMoments,

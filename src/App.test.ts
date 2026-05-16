@@ -12,6 +12,7 @@ import {
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
   buildGlobalAnalysisCacheKey,
+  buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisReport,
   classifyMoveFromEvaluationDrop,
   detectSwingPoint,
@@ -415,6 +416,93 @@ describe('analysis controls, cache, and key moment helpers', () => {
 
     const keyMoments = filterGlobalAnalysisMoments(report, 'key');
     expect(keyMoments.map((item) => item.san)).toEqual(['e5', 'Qh5']);
+  });
+
+  it('keeps cancellation disabled before analysis starts so idle buttons cannot reset state by mistake', () => {
+    const existingAnalysis = [
+      {
+        moveIndex: 0,
+        label: '1. e4',
+        san: 'e4',
+        quality: '好棋' as const,
+        centipawnLoss: 12,
+        beforeScore: 20,
+        afterScore: 8,
+        isSwingPoint: false,
+        bestMoveSan: 'e4',
+        multiPvLines: [],
+      },
+    ];
+
+    expect(
+      buildGlobalAnalysisCancellationPlan({
+        isAnalyzing: false,
+        hasWorker: true,
+        hasPendingRequest: false,
+        existingAnalysis,
+      }),
+    ).toMatchObject({
+      canCancel: false,
+      shouldStopWorker: false,
+      shouldRejectPendingRequest: false,
+      nextAnalysis: existingAnalysis,
+      nextProgress: '尚未开始整盘分析。',
+      nextEngineStatus: 'ready',
+      nextButtonLabel: '取消',
+    });
+  });
+
+  it('cancels a running analysis by stopping worker/request and resetting progress, error, engine, and button state', () => {
+    const existingAnalysis = [
+      {
+        moveIndex: 1,
+        label: '1... e5',
+        san: 'e5',
+        quality: '疑问手' as const,
+        centipawnLoss: 80,
+        beforeScore: 20,
+        afterScore: 100,
+        isSwingPoint: false,
+        bestMoveSan: 'c5',
+        multiPvLines: [],
+      },
+    ];
+
+    const plan = buildGlobalAnalysisCancellationPlan({
+      isAnalyzing: true,
+      hasWorker: true,
+      hasPendingRequest: true,
+      existingAnalysis,
+      currentError: 'Stockfish 分析超时。',
+    });
+
+    expect(plan).toMatchObject({
+      canCancel: true,
+      shouldStopWorker: true,
+      shouldRejectPendingRequest: true,
+      shouldMarkCanceled: true,
+      shouldKeepExistingAnalysis: true,
+      nextIsAnalyzing: false,
+      nextProgress: '已取消：Worker 已停止，保留取消前已有结果。',
+      nextError: '',
+      nextEngineStatus: 'ready',
+      nextButtonLabel: '分析整盘',
+    });
+    expect(plan.nextAnalysis).toBe(existingAnalysis);
+  });
+
+  it('allows a fresh analysis run after cancellation reset', () => {
+    const afterCancel = buildGlobalAnalysisCancellationPlan({
+      isAnalyzing: true,
+      hasWorker: false,
+      hasPendingRequest: true,
+      existingAnalysis: [],
+    });
+
+    expect(afterCancel.nextIsAnalyzing).toBe(false);
+    expect(afterCancel.nextCancelToken).toBe(false);
+    expect(afterCancel.nextEngineStatus).toBe('idle');
+    expect(afterCancel.nextButtonLabel).toBe('分析整盘');
   });
 });
 
