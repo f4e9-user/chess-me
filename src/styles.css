@@ -1387,8 +1387,42 @@ h2 {
 .bulk-pgn-list {
   display: grid;
   gap: 8px;
-  max-height: 220px;
+  max-height: 260px;
   overflow: auto;
+}
+
+.bulk-pgn-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.bulk-pgn-filters label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.bulk-pgn-filters input,
+.bulk-pgn-filters select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 7px 8px;
+  color: #1d2520;
+}
+
+.bulk-pgn-checkbox {
+  align-items: center;
+  grid-template-columns: auto 1fr;
+}
+
+.bulk-pgn-checkbox input {
+  width: auto;
 }
 
 .bulk-pgn-insights {
@@ -1414,11 +1448,29 @@ h2 {
 
 .bulk-pgn-card {
   display: grid;
-  gap: 3px;
+  gap: 6px;
   width: 100%;
+  border: 1px solid var(--border);
   border-radius: 8px;
+  background: #ffffff;
   padding: 10px;
   text-align: left;
+}
+
+.bulk-pgn-card-main {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+}
+
+.bulk-pgn-important-toggle {
+  justify-self: start;
+  padding: 5px 8px;
+  font-size: 0.78rem;
 }
 
 .bulk-pgn-card.active {
@@ -1428,8 +1480,14 @@ h2 {
 
 .bulk-pgn-card span,
 .bulk-pgn-card small,
+.bulk-pgn-empty,
 .bulk-pgn-errors {
   color: var(--ink-muted);
+}
+
+.bulk-pgn-empty {
+  margin: 0;
+  font-size: 0.86rem;
 }
 
 .bulk-pgn-errors {
