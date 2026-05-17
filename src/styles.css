@@ -946,6 +946,7 @@ h2 {
 .middlegame-plan-panel,
 .endgame-training-panel,
 .review-report-panel,
+.review-history-panel,
 .strength-profile-panel {
   display: grid;
   gap: 6px;
@@ -961,6 +962,7 @@ h2 {
 .middlegame-plan-header,
 .endgame-training-header,
 .review-report-header,
+.review-history-header,
 .strength-profile-header {
   display: flex;
   align-items: center;
@@ -972,6 +974,7 @@ h2 {
 .middlegame-plan-header span,
 .endgame-training-header span,
 .review-report-header span,
+.review-history-header span,
 .strength-profile-header span {
   color: var(--accent-strong);
   font-size: 0.82rem;
@@ -981,6 +984,7 @@ h2 {
 .opening-header strong,
 .middlegame-plan-header strong,
 .endgame-training-header strong,
+.review-history-header strong,
 .strength-profile-header strong,
 .review-training-advice strong {
   border: 1px solid rgba(34, 111, 84, 0.28);
@@ -999,6 +1003,7 @@ h2 {
 .middlegame-plan-panel p,
 .endgame-training-panel p,
 .review-report-panel p,
+.review-history-panel p,
 .strength-profile-panel p {
   margin: 0;
   color: var(--ink-muted);
@@ -1199,6 +1204,62 @@ h2 {
 
 .review-training-advice strong {
   justify-self: start;
+}
+
+.strength-history-summary,
+.review-history-stats,
+.review-history-item,
+.review-history-empty {
+  border: 1px solid rgba(34, 111, 84, 0.14);
+  border-radius: 8px;
+  background: rgba(34, 111, 84, 0.06);
+  padding: 10px;
+}
+
+.review-history-filters,
+.review-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-history-filters input,
+.review-history-filters select {
+  min-width: 160px;
+}
+
+.review-history-stats,
+.review-history-list,
+.review-history-item {
+  display: grid;
+  gap: 8px;
+}
+
+.review-history-stats span,
+.review-history-item span,
+.review-history-item small {
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.review-history-item {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.review-history-item.favorite {
+  border-color: rgba(214, 150, 30, 0.45);
+  background: rgba(255, 244, 204, 0.72);
+}
+
+.review-history-item strong,
+.review-history-stats strong {
+  color: #1d2520;
+}
+
+.review-history-actions {
+  justify-content: flex-end;
 }
 
 .notes-panel {

@@ -362,6 +362,43 @@ type ReviewReport = {
   markdown: string;
 };
 
+type ReviewReportHistoryMeta = {
+  event: string;
+  white: string;
+  black: string;
+  result: string;
+};
+
+type ReviewReportHistoryKeyMoment = Pick<GlobalMoveAnalysis, 'moveIndex' | 'label' | 'san' | 'quality' | 'centipawnLoss' | 'bestMoveSan'>;
+
+type ReviewReportHistoryItem = {
+  version: 1;
+  id: string;
+  savedAt: string;
+  pgn: string;
+  meta: ReviewReportHistoryMeta;
+  summary: string;
+  analysisSummary: string;
+  keyMoments: ReviewReportHistoryKeyMoment[];
+  trainingAdvice: string;
+  markdown: string;
+  isFavorite: boolean;
+};
+
+type ReviewReportHistoryFilters = {
+  query?: string;
+  result?: string;
+  favoriteOnly?: boolean;
+};
+
+type ReviewReportHistoryStats = {
+  totalReports: number;
+  favoriteReports: number;
+  totalKeyMoments: number;
+  mostCommonTrainingAdvice: string[];
+  summary: string;
+};
+
 type StrengthPhaseBreakdown = {
   phase: '开局' | '中局' | '残局';
   mistakes: number;
@@ -401,6 +438,7 @@ const initialPgn = `[Event "Training Review"]
 
 const initialFen = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
 const notesStorageKey = 'chess-me:position-notes:v1';
+const reviewReportHistoryStorageKey = 'chess-me:review-report-history:v1';
 const stockfishWorkerUrl = '/stockfish/stockfish-18-lite-single.js';
 const stockfishWasmUrl = '/stockfish/stockfish-18-lite-single.wasm';
 const stockfishAsmWorkerUrl = '/stockfish/stockfish-18-asm.js';
@@ -1720,6 +1758,134 @@ function buildReviewReport({
   };
 }
 
+function createReviewReportHistoryItem({
+  id,
+  savedAt,
+  pgn,
+  report,
+  analyses,
+  meta,
+}: {
+  id: string;
+  savedAt: string;
+  pgn: string;
+  report: ReviewReport;
+  analyses: GlobalMoveAnalysis[];
+  meta: ReviewReportHistoryMeta;
+}): ReviewReportHistoryItem {
+  const keyMoments = filterGlobalAnalysisMoments(analyses, 'key')
+    .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
+    .slice(0, 5)
+    .map(({ moveIndex, label, san, quality, centipawnLoss, bestMoveSan }) => ({
+      moveIndex,
+      label,
+      san,
+      quality,
+      centipawnLoss,
+      bestMoveSan,
+    }));
+
+  return {
+    version: 1,
+    id,
+    savedAt,
+    pgn,
+    meta,
+    summary: report.summary,
+    analysisSummary: report.markdown,
+    keyMoments,
+    trainingAdvice: report.trainingAdvice,
+    markdown: report.markdown,
+    isFavorite: false,
+  };
+}
+
+function filterReviewReportHistory(
+  history: ReviewReportHistoryItem[],
+  filters: ReviewReportHistoryFilters,
+): ReviewReportHistoryItem[] {
+  const query = filters.query?.trim().toLowerCase() ?? '';
+
+  return history.filter((item) => {
+    if (filters.favoriteOnly && !item.isFavorite) {
+      return false;
+    }
+
+    if (filters.result && item.meta.result !== filters.result) {
+      return false;
+    }
+
+    if (!query) {
+      return true;
+    }
+
+    const searchable = [
+      item.meta.event,
+      item.meta.white,
+      item.meta.black,
+      item.meta.result,
+      item.summary,
+      item.trainingAdvice,
+      item.keyMoments.map((moment) => `${moment.label} ${moment.san} ${moment.quality}`).join(' '),
+    ].join(' ').toLowerCase();
+
+    return searchable.includes(query);
+  });
+}
+
+function toggleReviewReportHistoryFavorite(history: ReviewReportHistoryItem[], id: string): ReviewReportHistoryItem[] {
+  return history.map((item) => (item.id === id ? { ...item, isFavorite: !item.isFavorite } : item));
+}
+
+function buildReviewReportHistoryStats(history: ReviewReportHistoryItem[]): ReviewReportHistoryStats {
+  const adviceCounts = new Map<string, number>();
+  history.forEach((item) => {
+    const advice = item.trainingAdvice.replace(/^优先训练/, '').split('，')[0].trim();
+    if (advice) {
+      adviceCounts.set(advice, (adviceCounts.get(advice) ?? 0) + 1);
+    }
+  });
+  const mostCommonTrainingAdvice = [...adviceCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([advice, count]) => `${advice}：${count} 份报告`);
+  const totalKeyMoments = history.reduce((total, item) => total + item.keyMoments.length, 0);
+
+  return {
+    totalReports: history.length,
+    favoriteReports: history.filter((item) => item.isFavorite).length,
+    totalKeyMoments,
+    mostCommonTrainingAdvice,
+    summary: history.length
+      ? `历史已沉淀 ${history.length} 份复盘报告，累计 ${totalKeyMoments} 个关键时刻。`
+      : '暂无历史复盘报告；保存当前报告后可形成长期棋力画像。',
+  };
+}
+
+function normalizeReviewReportHistoryItem(item: Partial<ReviewReportHistoryItem>): ReviewReportHistoryItem | null {
+  if (!item.id || !item.pgn || !item.meta || !item.summary) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    id: String(item.id),
+    savedAt: item.savedAt || new Date(0).toISOString(),
+    pgn: String(item.pgn),
+    meta: {
+      event: item.meta.event || '未知',
+      white: item.meta.white || '未知',
+      black: item.meta.black || '未知',
+      result: item.meta.result || '*',
+    },
+    summary: String(item.summary),
+    analysisSummary: item.analysisSummary || item.markdown || '',
+    keyMoments: Array.isArray(item.keyMoments) ? item.keyMoments : [],
+    trainingAdvice: item.trainingAdvice || '',
+    markdown: item.markdown || item.analysisSummary || '',
+    isFavorite: Boolean(item.isFavorite),
+  };
+}
+
 function normalizeSan(san: string) {
   return san.replace(/[+#?!]+/g, '');
 }
@@ -2229,6 +2395,24 @@ function saveStoredMistakeCards(cards: MistakeCard[]) {
   window.localStorage.setItem(mistakeBookStorageKey, JSON.stringify(cards));
 }
 
+function loadStoredReviewReportHistory(): ReviewReportHistoryItem[] {
+  try {
+    const rawHistory = window.localStorage.getItem(reviewReportHistoryStorageKey);
+    if (!rawHistory) {
+      return [];
+    }
+
+    const parsed = JSON.parse(rawHistory) as Array<Partial<ReviewReportHistoryItem>>;
+    return Array.isArray(parsed) ? parsed.map(normalizeReviewReportHistoryItem).filter((item): item is ReviewReportHistoryItem => Boolean(item)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveStoredReviewReportHistory(history: ReviewReportHistoryItem[]) {
+  window.localStorage.setItem(reviewReportHistoryStorageKey, JSON.stringify(history));
+}
+
 function getInitialCandidateTrainingStats(): CandidateTrainingStats {
   return {
     sessions: 0,
@@ -2571,6 +2755,12 @@ function App() {
   const [mistakeCards, setMistakeCards] = useState<MistakeCard[]>(() =>
     typeof window === 'undefined' ? [] : loadStoredMistakeCards(),
   );
+  const [reviewReportHistory, setReviewReportHistory] = useState<ReviewReportHistoryItem[]>(() =>
+    typeof window === 'undefined' ? [] : loadStoredReviewReportHistory(),
+  );
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyResultFilter, setHistoryResultFilter] = useState('all');
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [candidateInput, setCandidateInput] = useState('');
   const [candidateResult, setCandidateResult] = useState<CandidateMoveTrainingResult | null>(null);
   const [candidateStats, setCandidateStats] = useState<CandidateTrainingStats>(() =>
@@ -2654,6 +2844,18 @@ function App() {
     () => buildStrengthProfile({ analyses: globalAnalysis, mistakeCards, candidateStats }),
     [candidateStats, globalAnalysis, mistakeCards],
   );
+  const filteredReviewReportHistory = useMemo(
+    () => filterReviewReportHistory(reviewReportHistory, {
+      query: historySearch,
+      result: historyResultFilter === 'all' ? undefined : historyResultFilter,
+      favoriteOnly: showFavoritesOnly,
+    }),
+    [historyResultFilter, historySearch, reviewReportHistory, showFavoritesOnly],
+  );
+  const reviewReportHistoryStats = useMemo(
+    () => buildReviewReportHistoryStats(reviewReportHistory),
+    [reviewReportHistory],
+  );
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
 
@@ -2697,6 +2899,10 @@ function App() {
   useEffect(() => {
     saveStoredMistakeCards(mistakeCards);
   }, [mistakeCards]);
+
+  useEffect(() => {
+    saveStoredReviewReportHistory(reviewReportHistory);
+  }, [reviewReportHistory]);
 
   useEffect(() => {
     saveStoredCandidateTrainingStats(candidateStats);
@@ -3352,6 +3558,43 @@ function App() {
     showToast({ type: 'success', text: '已导出复盘报告 Markdown。' });
   };
 
+  const saveReviewReportToHistory = () => {
+    if (mode !== 'pgn' || result.error) {
+      showToast({ type: 'error', text: '只有合法 PGN 复盘可保存到历史。' });
+      return;
+    }
+
+    const item = createReviewReportHistoryItem({
+      id: `${Date.now()}`,
+      savedAt: new Date().toISOString(),
+      pgn: text,
+      report: reviewReport,
+      analyses: globalAnalysis,
+      meta: {
+        event: getPgnHeader(text, 'Event'),
+        white: getPgnHeader(text, 'White'),
+        black: getPgnHeader(text, 'Black'),
+        result: getPgnHeader(text, 'Result'),
+      },
+    });
+    setReviewReportHistory((history) => [item, ...history.filter((existing) => existing.pgn !== text)]);
+    showToast({ type: 'success', text: '已保存到历史复盘报告。' });
+  };
+
+  const reopenReviewReport = (item: ReviewReportHistoryItem) => {
+    setMode('pgn');
+    updateText(item.pgn);
+    showToast({ type: 'success', text: `已重新打开 ${item.meta.event}` });
+  };
+
+  const deleteReviewReportHistoryItem = (id: string) => {
+    setReviewReportHistory((history) => history.filter((item) => item.id !== id));
+  };
+
+  const toggleReviewReportHistoryItemFavorite = (id: string) => {
+    setReviewReportHistory((history) => toggleReviewReportHistoryFavorite(history, id));
+  };
+
   const copyReviewReport = async () => {
     try {
       await copyText(reviewReport.markdown);
@@ -3668,9 +3911,28 @@ function App() {
 
           <EndgameTrainingPanel plan={endgameTrainingPlan} onSelectMove={(index) => updatePositionIndex(index + 1)} />
 
-          <ReviewReportPanel report={reviewReport} onCopy={copyReviewReport} onExport={exportReviewReport} />
+          <ReviewReportPanel
+            report={reviewReport}
+            onCopy={copyReviewReport}
+            onExport={exportReviewReport}
+            onSave={saveReviewReportToHistory}
+          />
 
-          <StrengthProfilePanel profile={strengthProfile} />
+          <ReviewReportHistoryPanel
+            history={filteredReviewReportHistory}
+            stats={reviewReportHistoryStats}
+            search={historySearch}
+            resultFilter={historyResultFilter}
+            favoriteOnly={showFavoritesOnly}
+            onSearchChange={setHistorySearch}
+            onResultFilterChange={setHistoryResultFilter}
+            onFavoriteOnlyChange={setShowFavoritesOnly}
+            onOpen={reopenReviewReport}
+            onToggleFavorite={toggleReviewReportHistoryItemFavorite}
+            onDelete={deleteReviewReportHistoryItem}
+          />
+
+          <StrengthProfilePanel profile={strengthProfile} historyStats={reviewReportHistoryStats} />
 
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
@@ -4673,7 +4935,7 @@ function EndgameTrainingPanel({
   );
 }
 
-function StrengthProfilePanel({ profile }: { profile: StrengthProfile }) {
+function StrengthProfilePanel({ profile, historyStats }: { profile: StrengthProfile; historyStats: ReviewReportHistoryStats }) {
   return (
     <section className="strength-profile-panel" aria-label="个人棋力画像">
       <div className="strength-profile-header">
@@ -4681,6 +4943,7 @@ function StrengthProfilePanel({ profile }: { profile: StrengthProfile }) {
         <strong>{profile.weakAreas.length || '待分析'}</strong>
       </div>
       <p>{profile.summary}</p>
+      <p className="strength-history-summary">{historyStats.summary}</p>
 
       <div className="strength-radar-grid">
         {profile.radarAxes.map((axis) => (
@@ -4734,10 +4997,12 @@ function ReviewReportPanel({
   report,
   onCopy,
   onExport,
+  onSave,
 }: {
   report: ReviewReport;
   onCopy: () => void;
   onExport: () => void;
+  onSave: () => void;
 }) {
   return (
     <section className="review-report-panel" aria-label="复盘报告">
@@ -4747,6 +5012,9 @@ function ReviewReportPanel({
           <p>{report.summary}</p>
         </div>
         <div className="review-report-actions">
+          <button type="button" onClick={onSave}>
+            保存到历史
+          </button>
           <button type="button" onClick={onCopy}>
             复制 Markdown
           </button>
@@ -4778,6 +5046,108 @@ function ReviewReportPanel({
       <div className="review-training-advice">
         <strong>下一次训练建议</strong>
         <p>{report.trainingAdvice}</p>
+      </div>
+    </section>
+  );
+}
+
+function ReviewReportHistoryPanel({
+  history,
+  stats,
+  search,
+  resultFilter,
+  favoriteOnly,
+  onSearchChange,
+  onResultFilterChange,
+  onFavoriteOnlyChange,
+  onOpen,
+  onToggleFavorite,
+  onDelete,
+}: {
+  history: ReviewReportHistoryItem[];
+  stats: ReviewReportHistoryStats;
+  search: string;
+  resultFilter: string;
+  favoriteOnly: boolean;
+  onSearchChange: (value: string) => void;
+  onResultFilterChange: (value: string) => void;
+  onFavoriteOnlyChange: (value: boolean) => void;
+  onOpen: (item: ReviewReportHistoryItem) => void;
+  onToggleFavorite: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <section className="review-history-panel" aria-label="历史复盘报告">
+      <div className="review-history-header">
+        <div>
+          <span>历史复盘报告</span>
+          <p>{stats.summary}</p>
+        </div>
+        <strong>{stats.favoriteReports} 份重要</strong>
+      </div>
+
+      <div className="review-history-filters">
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder="搜索赛事、棋手、建议或关键着法"
+          aria-label="搜索历史复盘报告"
+        />
+        <select value={resultFilter} onChange={(event) => onResultFilterChange(event.target.value)} aria-label="按结果筛选">
+          <option value="all">全部结果</option>
+          <option value="1-0">白胜</option>
+          <option value="0-1">黑胜</option>
+          <option value="1/2-1/2">和棋</option>
+          <option value="*">未结束</option>
+        </select>
+        <label>
+          <input
+            type="checkbox"
+            checked={favoriteOnly}
+            onChange={(event) => onFavoriteOnlyChange(event.target.checked)}
+          />
+          只看重要
+        </label>
+      </div>
+
+      {stats.mostCommonTrainingAdvice.length > 0 && (
+        <div className="review-history-stats">
+          <strong>历史训练主题</strong>
+          {stats.mostCommonTrainingAdvice.slice(0, 3).map((advice) => (
+            <span key={advice}>{advice}</span>
+          ))}
+        </div>
+      )}
+
+      <div className="review-history-list">
+        {history.length ? (
+          history.map((item) => (
+            <article className={item.isFavorite ? 'review-history-item favorite' : 'review-history-item'} key={item.id}>
+              <div>
+                <strong>{item.meta.event}</strong>
+                <span>
+                  {item.meta.white} vs {item.meta.black} · {item.meta.result} · {new Date(item.savedAt).toLocaleDateString()}
+                </span>
+                <p>{item.summary}</p>
+                <small>关键时刻：{item.keyMoments.map((moment) => moment.label).join('、') || '暂无'}</small>
+              </div>
+              <div className="review-history-actions">
+                <button type="button" onClick={() => onOpen(item)}>
+                  打开
+                </button>
+                <button type="button" onClick={() => onToggleFavorite(item.id)}>
+                  {item.isFavorite ? '取消重要' : '标记重要'}
+                </button>
+                <button type="button" onClick={() => onDelete(item.id)}>
+                  删除
+                </button>
+              </div>
+            </article>
+          ))
+        ) : (
+          <p className="review-history-empty">暂无匹配报告。保存当前复盘后，可在这里搜索、筛选并重新打开。</p>
+        )}
       </div>
     </section>
   );
@@ -5096,6 +5466,10 @@ export {
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
   buildReviewReport,
+  buildReviewReportHistoryStats,
+  createReviewReportHistoryItem,
+  filterReviewReportHistory,
+  toggleReviewReportHistoryFavorite,
   buildStrengthProfile,
   buildBulkPgnLibraryInsights,
   buildCandidateMultiPvComparison,

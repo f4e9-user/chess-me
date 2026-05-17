@@ -13,7 +13,7 @@ Chess Me 是一个面向个人棋力提升的国际象棋复盘与训练工具�
 
 ## 当前分支功能
 
-当前分支：`feat/candidate-multipv-comparison`
+当前分支：`feat/review-report-history`
 
 ### 1. PGN / FEN 复盘
 
@@ -144,6 +144,18 @@ Chess Me 是一个面向个人棋力提升的国际象棋复盘与训练工具�
 - 统计常见开局、脱谱次数和脱谱率，帮助定位最需要优先复习的开局。
 - 当前支持内置开局库；自定义开局库与跨多盘统计保留为后续扩展。
 
+### 9. 历史复盘报告
+
+当前分支新增 **历史复盘报告**，把单盘复盘结论沉淀成本地可检索的长期训练档案。
+
+功能：
+
+- 在整盘复盘报告生成后，可点击 **保存到历史**，把 PGN、对局信息、摘要、关键时刻和训练建议保存到本地浏览器。
+- 历史报告使用版本化 localStorage 存储；相同 PGN 会去重，避免重复点击造成多份相同记录。
+- 支持按赛事、棋手、结果、报告摘要、训练建议和关键着法搜索。
+- 支持按结果筛选、只看重要报告、标记/取消重要、重新打开 PGN 以及删除历史记录。
+- 自动统计历史报告数量、重要报告数量、关键时刻总数和最常见训练主题，并把长期沉淀摘要接入个人棋力画像。
+
 ## 使用场景
 
 1. 从 lichess、Chess.com 或其他平台导出 PGN。
@@ -152,7 +164,8 @@ Chess Me 是一个面向个人棋力提升的国际象棋复盘与训练工具�
 4. 开启猜下一手训练，在关键局面先自己走。
 5. 开启 Stockfish 分析，对比实战手和引擎首选。
 6. 用一键全局分析快速找出全局错误分布。
-7. 把关键结论写入笔记并导出 PGN。
+7. 生成整盘复盘报告，并把高价值报告保存到历史。
+8. 定期回看历史复盘报告和个人棋力画像，确认训练主题是否收敛。
 
 ### 针对性训练
 
@@ -283,7 +296,8 @@ public/stockfish/
   - 推荐训练主题
 - [x] 生成“下一次训练建议”。
 - [x] 导出为 Markdown。
-- [ ] 支持保存历史报告。
+- [x] 支持保存历史报告。
+- [x] 支持搜索、筛选、标记重要、重新打开和删除历史报告。
 
 ### H. 个人棋力画像
 
@@ -292,6 +306,7 @@ public/stockfish/
 - [x] 统计不同错误类型：漏战术 / 计划错误 / 防守失败 / 时间压力。
 - [x] 根据数据给出训练优先级。
 - [x] 建立个人弱点雷达图。
+- [x] 接入历史复盘报告统计，展示长期报告沉淀和关键时刻数量。
 
 ### I. 数据导入与平台集成
 
@@ -331,6 +346,7 @@ npm test -- --run src/App.test.ts -t "middlegame plan training"
 npm test -- --run src/App.test.ts -t "endgame training"
 npm test -- --run src/App.test.ts -t "review report"
 npm test -- --run src/App.test.ts -t "strength profile"
+npm test -- --run src/App.test.ts -t "review report history helpers"
 npm test -- --run src/App.test.ts -t "advances from the player guess"
 npm test -- --run src/App.test.ts -t "opening improvement"
 npm test -- --run src/App.test.ts -t "candidate move training"
