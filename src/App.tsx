@@ -220,6 +220,7 @@ type GlobalMoveAnalysis = {
   afterScore: number | null;
   isSwingPoint: boolean;
   bestMoveSan: string;
+  primaryPv?: string[];
   multiPvLines: MultiPvLine[];
 };
 
@@ -790,11 +791,13 @@ function buildGlobalAnalysisReport({
   moves,
   positionScores,
   bestMoves,
+  primaryPvs,
   multiPvByMove,
 }: {
   moves: Array<Pick<Move, 'san' | 'color'>>;
   positionScores: Array<number | null>;
   bestMoves: string[];
+  primaryPvs?: string[][];
   multiPvByMove?: MultiPvLine[][];
 }): GlobalMoveAnalysis[] {
   return moves.map((move, index) => {
@@ -811,6 +814,7 @@ function buildGlobalAnalysisReport({
       afterScore,
       isSwingPoint: detectSwingPoint(beforeScore, afterScore, centipawnLoss),
       bestMoveSan: bestMoves[index] ?? '',
+      primaryPv: primaryPvs?.[index] ?? [],
       multiPvLines: multiPvByMove?.[index] ?? [],
     };
   });
@@ -2959,6 +2963,7 @@ function App() {
     try {
       const positionScores: Array<number | null> = [];
       const bestMoves: string[] = [];
+      const primaryPvs: string[][] = [];
       const multiPvByMove: MultiPvLine[][] = [];
 
       for (let index = 0; index < result.moves.length; index += 1) {
@@ -2975,6 +2980,7 @@ function App() {
         const beforeAnalysis = await analyzeFenOnce(beforeFen, config);
         positionScores[index] = scoreToWhiteCentipawns(beforeAnalysis.score);
         bestMoves[index] = beforeAnalysis.bestMoveSan || beforeAnalysis.bestMove;
+        primaryPvs[index] = beforeAnalysis.pv;
         multiPvByMove[index] = beforeAnalysis.multiPvLines;
       }
 
@@ -2993,6 +2999,7 @@ function App() {
         moves: result.moves,
         positionScores,
         bestMoves,
+        primaryPvs,
         multiPvByMove,
       });
 
@@ -4344,7 +4351,7 @@ function GlobalAnalysisPanel({
                 {formatMultiPvDisplayLines({
                   multiPvLines: item.multiPvLines,
                   fallbackBestMoveSan: item.bestMoveSan,
-                  fallbackPv: item.bestMoveSan ? [item.bestMoveSan] : [],
+                  fallbackPv: item.primaryPv?.length ? item.primaryPv : item.bestMoveSan ? [item.bestMoveSan] : [],
                 }).join(' ｜ ')}
               </span>
               {item.isSwingPoint && <strong>突变</strong>}

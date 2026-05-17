@@ -673,6 +673,25 @@ describe('global game analysis helpers', () => {
     expect(classifyMoveFromEvaluationDrop(420)).toBe('败着');
   });
 
+  it('preserves the full engine primary PV for fallback display when MultiPV is empty', () => {
+    const report = buildGlobalAnalysisReport({
+      moves: [{ san: 'e4', color: 'w' }],
+      positionScores: [20, 12],
+      bestMoves: ['Nf3'],
+      primaryPvs: [['Nf3', 'Nc6', 'Bb5']],
+      multiPvByMove: [[]],
+    });
+
+    expect(report[0].primaryPv).toEqual(['Nf3', 'Nc6', 'Bb5']);
+    expect(
+      formatMultiPvDisplayLines({
+        multiPvLines: report[0].multiPvLines,
+        fallbackBestMoveSan: report[0].bestMoveSan,
+        fallbackPv: report[0].primaryPv ?? [],
+      }),
+    ).toEqual(['首选 Nf3 · 主线 Nf3 Nc6 Bb5']);
+  });
+
   it('detects evaluation swing points at major drops or side changes', () => {
     expect(detectSwingPoint(40, -120, 160)).toBe(true);
     expect(detectSwingPoint(220, 80, 140)).toBe(false);
