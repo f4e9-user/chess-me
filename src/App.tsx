@@ -83,6 +83,10 @@ type BulkPgnLibrary = {
   summary: string;
 };
 
+type TextUpdateOptions = {
+  preserveBulkPgnLibrary?: boolean;
+};
+
 type BulkPgnLibraryFilters = {
   source?: BulkPgnSource | 'all';
   dateFrom?: string;
@@ -707,6 +711,10 @@ function parseBulkPgnLibrary(files: BulkPgnFileInput[], history: ReviewReportHis
     duplicates,
     summary: `导入 ${games.length} 盘${duplicates.length > 0 ? `，去重 ${duplicates.length} 盘` : ''}${errors.length > 0 ? `，失败 ${errors.length} 盘` : ''}`,
   };
+}
+
+function shouldClearBulkPgnLibraryAfterTextUpdate(options: TextUpdateOptions = {}): boolean {
+  return options.preserveBulkPgnLibrary !== true;
 }
 
 function toggleBulkPgnGameImportant(games: BulkPgnGameSummary[], id: string): BulkPgnGameSummary[] {
@@ -3623,7 +3631,7 @@ function App() {
     setBulkPgnLibrary(null);
   };
 
-  const updateText = (value: string) => {
+  const updateText = (value: string, options: TextUpdateOptions = {}) => {
     setText(value);
     setPositionIndex(0);
     setVariationPositions([]);
@@ -3635,7 +3643,9 @@ function App() {
     setGlobalAnalysisError('');
     setGlobalAnalysisProgress('');
     setGlobalAnalysisCacheStatus('尚未分析');
-    setBulkPgnLibrary(null);
+    if (shouldClearBulkPgnLibraryAfterTextUpdate(options)) {
+      setBulkPgnLibrary(null);
+    }
   };
 
   const updateCurrentNote = (value: string) => {
@@ -3667,7 +3677,7 @@ function App() {
 
       setBulkPgnLibrary(library);
       setMode('pgn');
-      updateText(library.games[0].content);
+      updateText(library.games[0].content, { preserveBulkPgnLibrary: true });
       showToast({ type: library.errors.length > 0 ? 'error' : 'success', text: library.summary });
     } catch {
       showToast({ type: 'error', text: '导入失败：无法读取文件。' });
@@ -5740,6 +5750,7 @@ export {
   parseBulkPgnLibrary,
   parseCandidateMoveEntries,
   scoreToWhiteCentipawns,
+  shouldClearBulkPgnLibraryAfterTextUpdate,
   toggleBulkPgnGameImportant,
   updateMistakeCardReview,
   upsertMistakeCard,
