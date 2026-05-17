@@ -15,6 +15,7 @@ import {
   buildBulkPgnLibraryInsights,
   filterBulkPgnLibraryGames,
   parseBulkPgnLibrary,
+  shouldClearBulkPgnLibraryAfterTextUpdate,
   toggleBulkPgnGameImportant,
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
@@ -250,6 +251,14 @@ describe('opening improvement helpers', () => {
 });
 
 describe('bulk PGN import helpers', () => {
+  it('preserves the imported library when initial batch import loads the first game', () => {
+    expect(shouldClearBulkPgnLibraryAfterTextUpdate({ preserveBulkPgnLibrary: true })).toBe(false);
+  });
+
+  it('clears transient bulk library state for ordinary single-game text updates', () => {
+    expect(shouldClearBulkPgnLibraryAfterTextUpdate()).toBe(true);
+  });
+
   it('splits multiple PGN games, extracts headers, validates moves, and reports invalid entries', () => {
     const library = parseBulkPgnLibrary([
       {
