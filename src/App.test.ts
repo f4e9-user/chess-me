@@ -7,6 +7,10 @@ import {
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
   buildReviewReport,
+  buildReviewReportHistoryStats,
+  createReviewReportHistoryItem,
+  filterReviewReportHistory,
+  toggleReviewReportHistoryFavorite,
   buildStrengthProfile,
   buildBulkPgnLibraryInsights,
   parseBulkPgnLibrary,
@@ -364,6 +368,83 @@ describe('review report helpers', () => {
   });
 });
 
+describe('review report history helpers', () => {
+  const baseReport = buildReviewReport({
+    opening: { eco: 'C60', name: 'Ruy Lopez', status: 'deviation', matchedPly: 5, deviationMove: 'h6', nextBookMove: 'a6' },
+    analyses: [
+      { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', quality: '败着', centipawnLoss: 420, beforeScore: 80, afterScore: -360, isSwingPoint: true, bestMoveSan: 'Re1', multiPvLines: [] },
+      { moveIndex: 46, label: '24... Ke1', san: 'Ke1', quality: '失误', centipawnLoss: 180, beforeScore: 0, afterScore: 220, isSwingPoint: true, bestMoveSan: 'Kd1', multiPvLines: [] },
+    ],
+    middlegamePlan: {
+      focusCards: [{
+        id: 'mid-16', moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', topic: '候选着法与风险控制', priority: 100,
+        recommendedPlan: '优先比较 Re1。', reason: '中局败着导致局势逆转。', tags: ['中局', '败着'],
+      }],
+      themeStats: [{ theme: '候选着法与风险控制', count: 1, totalLoss: 420 }],
+      summary: '发现 1 个关键中局计划点。',
+    },
+    endgamePlan: {
+      phase: 'endgame', type: '车残局',
+      cards: [{ id: 'end-46', moveIndex: 46, label: '24... Ke1', san: 'Ke1', endgameType: '车残局', missedChance: '错过守和机会', recommendedMove: 'Kd1', prompt: '复盘残局守和。', tags: ['残局', '车残局'] }],
+      themes: ['王的积极性'], summary: '识别到车残局。',
+    },
+  });
+
+  it('creates versioned durable history entries with PGN, metadata, summary, key moments, and training advice', () => {
+    const item = createReviewReportHistoryItem({
+      id: 'report-1',
+      savedAt: '2026-05-17T09:00:00.000Z',
+      pgn: '[Event "Italian Win"]\n[White "Me"]\n[Black "A"]\n[Result "1-0"]\n\n1. e4 e5 1-0',
+      report: baseReport,
+      analyses: [
+        { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', quality: '败着', centipawnLoss: 420, beforeScore: 80, afterScore: -360, isSwingPoint: true, bestMoveSan: 'Re1', multiPvLines: [] },
+      ],
+      meta: { event: 'Italian Win', white: 'Me', black: 'A', result: '1-0' },
+    });
+
+    expect(item).toMatchObject({
+      version: 1,
+      id: 'report-1',
+      savedAt: '2026-05-17T09:00:00.000Z',
+      pgn: expect.stringContaining('[Event "Italian Win"]'),
+      meta: { event: 'Italian Win', white: 'Me', black: 'A', result: '1-0' },
+      isFavorite: false,
+      summary: expect.stringContaining('最大失误：9. Nxe5'),
+      trainingAdvice: expect.stringContaining('候选着法与风险控制'),
+    });
+    expect(item.keyMoments[0]).toMatchObject({ label: '9. Nxe5', quality: '败着', centipawnLoss: 420 });
+  });
+
+  it('searches, filters favorites, reopens reports, and aggregates history stats for strength profile linkage', () => {
+    const first = createReviewReportHistoryItem({
+      id: 'report-1', savedAt: '2026-05-17T09:00:00.000Z', pgn: '[Event "Ruy Lopez"]\n[White "Me"]\n[Black "A"]\n[Result "1-0"]\n\n1. e4 e5 1-0',
+      report: baseReport,
+      analyses: [
+        { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', quality: '败着', centipawnLoss: 420, beforeScore: 80, afterScore: -360, isSwingPoint: true, bestMoveSan: 'Re1', multiPvLines: [] },
+      ],
+      meta: { event: 'Ruy Lopez', white: 'Me', black: 'A', result: '1-0' },
+    });
+    const second = createReviewReportHistoryItem({
+      id: 'report-2', savedAt: '2026-05-18T09:00:00.000Z', pgn: '[Event "Queen Pawn"]\n[White "B"]\n[Black "Me"]\n[Result "0-1"]\n\n1. d4 d5 0-1',
+      report: { ...baseReport, summary: '本局复盘完成，Queen Pawn，最大失误：12... Qh4，推荐训练：防守失败。', trainingAdvice: '优先训练防守失败。' },
+      analyses: [
+        { moveIndex: 22, label: '12... Qh4', san: 'Qh4', quality: '失误', centipawnLoss: 180, beforeScore: -40, afterScore: 140, isSwingPoint: true, bestMoveSan: 'Qc7', multiPvLines: [] },
+      ],
+      meta: { event: 'Queen Pawn', white: 'B', black: 'Me', result: '0-1' },
+    });
+    const favoriteSecond = toggleReviewReportHistoryFavorite([first, second], 'report-2')[1];
+    const history = [first, favoriteSecond];
+
+    expect(favoriteSecond.isFavorite).toBe(true);
+    expect(filterReviewReportHistory(history, { query: 'queen', favoriteOnly: true })).toEqual([favoriteSecond]);
+    expect(filterReviewReportHistory(history, { query: 'me', result: '1-0' })).toEqual([first]);
+
+    const stats = buildReviewReportHistoryStats(history);
+    expect(stats).toMatchObject({ totalReports: 2, favoriteReports: 1, totalKeyMoments: 2 });
+    expect(stats.mostCommonTrainingAdvice[0]).toContain('候选着法与风险控制');
+    expect(stats.summary).toContain('历史已沉淀 2 份复盘报告');
+  });
+});
 describe('endgame training helpers', () => {
   it('detects endgame phase, classifies type, and generates training cards from late mistakes', () => {
     const plan = buildEndgameTrainingPlan({
