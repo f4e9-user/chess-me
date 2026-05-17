@@ -11,6 +11,9 @@ import {
   createReviewReportHistoryItem,
   filterReviewReportHistory,
   toggleReviewReportHistoryFavorite,
+  buildNaturalLanguageCoachReport,
+  buildNaturalLanguagePositionExplanation,
+  buildPracticeThemeRecommendations,
   buildStrengthProfile,
   buildBulkPgnLibraryInsights,
   filterBulkPgnLibraryGames,
@@ -616,6 +619,113 @@ describe('middlegame plan training helpers', () => {
     });
     expect(plan.themeStats.map((theme) => theme.theme)).toContain('王翼兵形/王安全');
     expect(plan.summary).toContain('2 个关键中局计划点');
+  });
+});
+
+describe('natural language coach helpers', () => {
+  const blunderAnalysis = {
+    moveIndex: 18,
+    label: '10... g5',
+    san: 'g5',
+    quality: '败着' as const,
+    centipawnLoss: 420,
+    beforeScore: -80,
+    afterScore: 360,
+    isSwingPoint: true,
+    bestMoveSan: 'Re8',
+    primaryPv: ['Re8', 'Qf3', 'Bb7'],
+    multiPvLines: [
+      { rank: 1, score: { type: 'cp' as const, value: -80 }, pv: ['Re8', 'Qf3', 'Bb7'], uci: ['f8e8'], firstMoveSan: 'Re8', displayScore: '-0.80' },
+      { rank: 2, score: { type: 'cp' as const, value: 120 }, pv: ['h6', 'Nf3'], uci: ['h7h6'], firstMoveSan: 'h6', displayScore: '+1.20' },
+    ],
+  };
+
+  it('generates deterministic explanations for blunders with why-bad, impact, and candidate guidance', () => {
+    const explanation = buildNaturalLanguagePositionExplanation({
+      analysis: blunderAnalysis,
+      reviewReport: {
+        summary: '本局复盘完成，最大失误：10... g5，推荐训练：王翼兵形/王安全。',
+        trainingAdvice: '优先训练王翼兵形/王安全，并把 10... g5 前的候选着法写成 2-3 个备选方案。',
+      },
+      candidateComparison: buildCandidateMultiPvComparison({
+        rawCandidates: 'g5 - 扩张王翼\nRe8 - 先改善车的位置\nh6 - 防止 Bg5',
+        selectedSan: 'g5',
+        actualSan: 'g5',
+        stockfishBestSan: 'Re8',
+        multiPvLines: blunderAnalysis.multiPvLines,
+      }),
+    });
+
+    expect(explanation).toMatchObject({
+      moveLabel: '10... g5',
+      severity: 'blunder',
+      title: '10... g5：败着，需要优先复盘',
+      recommendedCandidateMoves: ['Re8', 'h6'],
+      practiceThemes: expect.arrayContaining(['王翼兵形/王安全', '候选着法与风险控制']),
+    });
+    expect(explanation.whyBad).toContain('损失 420 cp');
+    expect(explanation.strategicImpact).toContain('局势突变');
+    expect(explanation.candidateGuidance).toContain('优先比较 Re8');
+    expect(explanation.markdown).toContain('## 为什么这步差');
+    expect(explanation.markdown).toContain('## 应关注的候选着法');
+  });
+
+  it('recommends practice themes from reports, candidate misses, and history without external APIs', () => {
+    const themes = buildPracticeThemeRecommendations({
+      reviewReport: {
+        trainingAdvice: '优先训练王翼兵形/王安全，并把 10... g5 前的候选着法写成 2-3 个备选方案。',
+      },
+      candidateStats: {
+        sessions: 5,
+        validSessions: 5,
+        answerCovered: 2,
+        bestCovered: 1,
+        answerInCandidatesButNotSelected: 2,
+        sortingScoreTotal: 260,
+      },
+      history: [
+        {
+          trainingAdvice: '优先训练王翼兵形/王安全，并把 10... g5 前的候选着法写成 2-3 个备选方案。',
+          keyMoments: [{ quality: '败着', label: '10... g5' }],
+        },
+        {
+          trainingAdvice: '优先训练候选着法与风险控制，并把 8. Qh5 前的候选着法写成 2-3 个备选方案。',
+          keyMoments: [{ quality: '失误', label: '8. Qh5' }],
+        },
+      ],
+    });
+
+    expect(themes[0]).toMatchObject({
+      theme: '王翼兵形/王安全',
+      source: 'current-report',
+      priority: 'high',
+    });
+    expect(themes.map((item) => item.theme)).toEqual(expect.arrayContaining(['候选着覆盖', '最佳着意识', '候选着排序执行']));
+    expect(themes.some((item) => item.evidence.includes('历史报告'))).toBe(true);
+  });
+
+  it('builds a copyable coach report section that can be saved with the review report history', () => {
+    const coach = buildNaturalLanguageCoachReport({
+      analyses: [blunderAnalysis],
+      reviewReport: {
+        summary: '本局复盘完成，最大失误：10... g5，推荐训练：王翼兵形/王安全。',
+        trainingAdvice: '优先训练王翼兵形/王安全，并把 10... g5 前的候选着法写成 2-3 个备选方案。',
+      },
+      candidateStats: {
+        sessions: 2,
+        validSessions: 2,
+        answerCovered: 1,
+        bestCovered: 1,
+        answerInCandidatesButNotSelected: 1,
+        sortingScoreTotal: 120,
+      },
+      history: [],
+    });
+
+    expect(coach.summary).toContain('自然语言教练生成 1 个局面解释');
+    expect(coach.positionExplanations[0].markdown).toContain('10... g5');
+    expect(coach.markdown).toContain('# 自然语言教练解释');
+    expect(coach.markdown).toContain('## 推荐练习主题');
   });
 });
 

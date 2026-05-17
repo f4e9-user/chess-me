@@ -1175,7 +1175,8 @@ h2 {
   flex: 1 1 220px;
 }
 
-.review-report-actions {
+.review-report-actions,
+.natural-language-coach-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1188,7 +1189,9 @@ h2 {
 }
 
 .review-report-grid article,
-.review-training-advice {
+.review-training-advice,
+.natural-language-coach-panel,
+.natural-language-coach-grid article {
   display: grid;
   gap: 6px;
   border: 1px solid rgba(34, 111, 84, 0.14);
@@ -1197,13 +1200,40 @@ h2 {
   padding: 10px;
 }
 
-.review-report-grid article span {
+.review-report-grid article span,
+.natural-language-coach-grid article span,
+.natural-language-position strong {
   color: #1d2520;
   font-weight: 900;
 }
 
 .review-training-advice strong {
   justify-self: start;
+}
+
+.natural-language-coach-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.natural-language-coach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.natural-language-position {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(34, 111, 84, 0.14);
+  padding-top: 8px;
+}
+
+.natural-language-position:first-of-type {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .strength-history-summary,

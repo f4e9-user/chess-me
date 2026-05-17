@@ -404,6 +404,33 @@ type ReviewReport = {
   markdown: string;
 };
 
+type NaturalLanguagePracticeTheme = {
+  theme: string;
+  priority: 'high' | 'medium' | 'low';
+  source: 'current-report' | 'candidate-training' | 'history';
+  evidence: string;
+  nextAction: string;
+};
+
+type NaturalLanguagePositionExplanation = {
+  moveLabel: string;
+  severity: KeyMomentSeverity | 'normal';
+  title: string;
+  whyBad: string;
+  strategicImpact: string;
+  candidateGuidance: string;
+  recommendedCandidateMoves: string[];
+  practiceThemes: string[];
+  markdown: string;
+};
+
+type NaturalLanguageCoachReport = {
+  summary: string;
+  positionExplanations: NaturalLanguagePositionExplanation[];
+  practiceThemes: NaturalLanguagePracticeTheme[];
+  markdown: string;
+};
+
 type ReviewReportHistoryMeta = {
   event: string;
   white: string;
@@ -1835,6 +1862,246 @@ function buildStrengthProfile({
   };
 }
 
+function addPracticeTheme(
+  themes: NaturalLanguagePracticeTheme[],
+  theme: string,
+  priority: NaturalLanguagePracticeTheme['priority'],
+  source: NaturalLanguagePracticeTheme['source'],
+  evidence: string,
+  nextAction: string,
+) {
+  const existing = themes.find((item) => item.theme === theme);
+  if (existing) {
+    const priorityRank = { high: 3, medium: 2, low: 1 };
+    if (priorityRank[priority] > priorityRank[existing.priority]) {
+      existing.priority = priority;
+      existing.source = source;
+      existing.nextAction = nextAction;
+    }
+    if (!existing.evidence.includes(evidence)) {
+      existing.evidence = `${existing.evidence}；${evidence}`;
+    }
+    return;
+  }
+
+  themes.push({ theme, priority, source, evidence, nextAction });
+}
+
+function extractPracticeThemesFromText(text?: string) {
+  if (!text) {
+    return [];
+  }
+
+  const knownThemes = ['王翼兵形/王安全', '候选着法与风险控制', '中心与兵形', '换子与战术计算', '子力协调/最差子改善', '基础残局转换'];
+  return knownThemes.filter((theme) => text.includes(theme));
+}
+
+function buildPracticeThemeRecommendations({
+  reviewReport,
+  candidateStats,
+  history = [],
+}: {
+  reviewReport?: Pick<ReviewReport, 'trainingAdvice'> | { trainingAdvice?: string } | null;
+  candidateStats?: CandidateTrainingStats | null;
+  history?: Array<Pick<ReviewReportHistoryItem, 'trainingAdvice' | 'keyMoments'> | { trainingAdvice?: string; keyMoments?: Array<Partial<ReviewReportHistoryKeyMoment>> }>;
+}): NaturalLanguagePracticeTheme[] {
+  const themes: NaturalLanguagePracticeTheme[] = [];
+
+  extractPracticeThemesFromText(reviewReport?.trainingAdvice).forEach((theme) => {
+    addPracticeTheme(
+      themes,
+      theme,
+      'high',
+      'current-report',
+      `当前复盘建议包含「${theme}」`,
+      `下一盘先做 10 分钟「${theme}」专项，再回看本局最大失误。`,
+    );
+  });
+
+  if (candidateStats && candidateStats.validSessions > 0) {
+    const coverageRate = candidateStats.answerCovered / candidateStats.validSessions;
+    const bestCoverageRate = candidateStats.bestCovered / candidateStats.validSessions;
+    const averageSortingScore = Math.round(candidateStats.sortingScoreTotal / candidateStats.validSessions);
+
+    if (coverageRate < 0.6) {
+      addPracticeTheme(
+        themes,
+        '候选着覆盖',
+        'high',
+        'candidate-training',
+        `答案覆盖率 ${candidateStats.answerCovered}/${candidateStats.validSessions}`,
+        '每个关键局面先写满 3 个候选着，再计算对方最强回应。',
+      );
+    }
+    if (bestCoverageRate < 0.6) {
+      addPracticeTheme(
+        themes,
+        '最佳着意识',
+        'high',
+        'candidate-training',
+        `最佳着覆盖率 ${candidateStats.bestCovered}/${candidateStats.validSessions}`,
+        '复盘时把引擎首选加入候选清单，并解释它解决的最大威胁。',
+      );
+    }
+    if (candidateStats.answerInCandidatesButNotSelected > 0 || averageSortingScore < 70) {
+      addPracticeTheme(
+        themes,
+        '候选着排序执行',
+        'medium',
+        'candidate-training',
+        `候选里有答案但未选择 ${candidateStats.answerInCandidatesButNotSelected} 次，平均排序 ${averageSortingScore}`,
+        '候选着写完后按安全性、主动性、战术漏洞三项排序。',
+      );
+    }
+  }
+
+  const historyThemeCounts = new Map<string, number>();
+  history.forEach((item) => {
+    extractPracticeThemesFromText(item.trainingAdvice).forEach((theme) => {
+      historyThemeCounts.set(theme, (historyThemeCounts.get(theme) ?? 0) + 1);
+    });
+    const severeMoments = item.keyMoments?.filter((moment) => moment.quality === '败着' || moment.quality === '失误') ?? [];
+    if (severeMoments.length > 0) {
+      historyThemeCounts.set('复盘关键时刻', (historyThemeCounts.get('复盘关键时刻') ?? 0) + severeMoments.length);
+    }
+  });
+
+  [...historyThemeCounts.entries()]
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 3)
+    .forEach(([theme, count]) => {
+      addPracticeTheme(
+        themes,
+        theme,
+        count >= 2 ? 'high' : 'medium',
+        'history',
+        `历史报告出现 ${count} 次`,
+        `从历史报告中挑 3 个「${theme}」局面做间隔复盘。`,
+      );
+    });
+
+  if (themes.length === 0) {
+    addPracticeTheme(
+      themes,
+      '候选着法与风险控制',
+      'low',
+      'current-report',
+      '暂无稳定弱项，使用默认复盘主题',
+      '每个关键局面固定写 2-3 个候选着并标注风险。',
+    );
+  }
+
+  const priorityRank = { high: 3, medium: 2, low: 1 };
+  const sourceRank = { 'current-report': 3, history: 2, 'candidate-training': 1 };
+  return themes.sort((a, b) =>
+    priorityRank[b.priority] - priorityRank[a.priority]
+    || sourceRank[b.source] - sourceRank[a.source]
+    || a.theme.localeCompare(b.theme),
+  );
+}
+
+function getExplanationSeverity(analysis: GlobalMoveAnalysis): NaturalLanguagePositionExplanation['severity'] {
+  return classifyKeyAnalysisMoment(analysis).severity ?? 'normal';
+}
+
+function getExplanationTitle(analysis: GlobalMoveAnalysis) {
+  const suffix = analysis.quality === '好棋' ? '可作为正例复盘' : '需要优先复盘';
+  return `${analysis.label}：${analysis.quality}，${suffix}`;
+}
+
+function buildNaturalLanguagePositionExplanation({
+  analysis,
+  reviewReport,
+  candidateComparison,
+}: {
+  analysis: GlobalMoveAnalysis;
+  reviewReport?: Pick<ReviewReport, 'trainingAdvice' | 'summary'> | { trainingAdvice?: string; summary?: string } | null;
+  candidateComparison?: CandidateMultiPvComparison | null;
+}): NaturalLanguagePositionExplanation {
+  const classification = classifyKeyAnalysisMoment(analysis);
+  const recommendedCandidateMoves = rankMultiPvLines(analysis.multiPvLines)
+    .map((line) => line.firstMoveSan || line.pv[0] || '')
+    .filter(Boolean)
+    .slice(0, 3);
+  const theme = classifyMiddlegameTheme(analysis);
+  const practiceThemes = [...new Set([theme, analysis.centipawnLoss >= 300 ? '候选着法与风险控制' : '', ...extractPracticeThemesFromText(reviewReport?.trainingAdvice)].filter(Boolean))];
+  const bestMove = recommendedCandidateMoves[0] || analysis.bestMoveSan || '-';
+  const whyBad = analysis.quality === '好棋'
+    ? `这步损失 ${analysis.centipawnLoss} cp，仍可作为稳定选择复盘。`
+    : `这步被标记为${analysis.quality}，损失 ${analysis.centipawnLoss} cp；引擎首选是 ${analysis.bestMoveSan || bestMove}。`;
+  const strategicImpact = [
+    analysis.isSwingPoint ? '它触发局势突变，说明走子前需要先检查对方强制回应。' : '它没有触发大幅局势突变，但仍暴露了计划选择问题。',
+    classification.reasons.length ? `复盘标签：${classification.reasons.join('、')}。` : '',
+    reviewReport?.summary ? `报告背景：${reviewReport.summary}` : '',
+  ].filter(Boolean).join(' ');
+  const candidateGuidance = candidateComparison?.selectedRow
+    ? `实战选择 ${candidateComparison.selectedRow.moveSan} 的反馈是「${candidateComparison.selectedRow.feedbackLabel}」；下次优先比较 ${bestMove}，并用 MultiPV 主线验证候选着风险。`
+    : `下次先列出 ${recommendedCandidateMoves.join('、') || analysis.bestMoveSan || '引擎首选'} 等候选着，再比较每步的直接威胁和王安全。`;
+  const markdown = [
+    `# ${getExplanationTitle(analysis)}`,
+    '',
+    `## 为什么这步差\n${whyBad}`,
+    '',
+    `## 战略影响\n${strategicImpact}`,
+    '',
+    `## 应关注的候选着法\n${candidateGuidance}`,
+    '',
+    `## 练习主题\n${practiceThemes.join('、') || '候选着法与风险控制'}`,
+  ].join('\n');
+
+  return {
+    moveLabel: analysis.label,
+    severity: getExplanationSeverity(analysis),
+    title: getExplanationTitle(analysis),
+    whyBad,
+    strategicImpact,
+    candidateGuidance,
+    recommendedCandidateMoves,
+    practiceThemes,
+    markdown,
+  };
+}
+
+function buildNaturalLanguageCoachReport({
+  analyses,
+  reviewReport,
+  candidateStats,
+  history = [],
+}: {
+  analyses: GlobalMoveAnalysis[];
+  reviewReport?: Pick<ReviewReport, 'summary' | 'trainingAdvice'> | { summary?: string; trainingAdvice?: string } | null;
+  candidateStats?: CandidateTrainingStats | null;
+  history?: Array<Pick<ReviewReportHistoryItem, 'trainingAdvice' | 'keyMoments'> | { trainingAdvice?: string; keyMoments?: Array<Partial<ReviewReportHistoryKeyMoment>> }>;
+}): NaturalLanguageCoachReport {
+  const focusAnalyses = filterGlobalAnalysisMoments(analyses, 'key')
+    .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
+    .slice(0, 3);
+  const positionExplanations = focusAnalyses.map((analysis) => buildNaturalLanguagePositionExplanation({ analysis, reviewReport }));
+  const practiceThemes = buildPracticeThemeRecommendations({ reviewReport, candidateStats, history });
+  const summary = positionExplanations.length
+    ? `自然语言教练生成 ${positionExplanations.length} 个局面解释，首要练习主题：${practiceThemes[0]?.theme ?? '候选着法与风险控制'}。`
+    : `自然语言教练暂未发现关键失误，建议保持${practiceThemes[0]?.theme ?? '候选着法与风险控制'}训练。`;
+  const markdown = [
+    '# 自然语言教练解释',
+    '',
+    `## 总览\n${summary}`,
+    '',
+    '## 关键局面解释',
+    positionExplanations.length ? positionExplanations.map((item) => item.markdown).join('\n\n') : '暂无关键局面解释。',
+    '',
+    '## 推荐练习主题',
+    ...practiceThemes.map((theme, index) => `${index + 1}. ${theme.theme}（${theme.priority}）- ${theme.evidence}。${theme.nextAction}`),
+  ].join('\n');
+
+  return {
+    summary,
+    positionExplanations,
+    practiceThemes,
+    markdown,
+  };
+}
+
 function buildReviewReport({
   opening,
   analyses,
@@ -2985,6 +3252,15 @@ function App() {
       }),
     [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch],
   );
+  const naturalLanguageCoach = useMemo(
+    () => buildNaturalLanguageCoachReport({
+      analyses: globalAnalysis,
+      reviewReport,
+      candidateStats,
+      history: reviewReportHistory,
+    }),
+    [candidateStats, globalAnalysis, reviewReport, reviewReportHistory],
+  );
   const filteredBulkPgnGames = useMemo(
     () => (bulkPgnLibrary ? filterBulkPgnLibraryGames(bulkPgnLibrary.games, bulkPgnFilters) : []),
     [bulkPgnFilters, bulkPgnLibrary],
@@ -3724,6 +4000,11 @@ function App() {
     showToast({ type: 'success', text: '已导出复盘报告 Markdown。' });
   };
 
+  const exportNaturalLanguageCoachReport = () => {
+    downloadText('chess-me-natural-language-coach.md', naturalLanguageCoach.markdown, 'text/markdown;charset=utf-8');
+    showToast({ type: 'success', text: '已导出自然语言教练 Markdown。' });
+  };
+
   const saveReviewReportToHistory = () => {
     if (mode !== 'pgn' || result.error) {
       showToast({ type: 'error', text: '只有合法 PGN 复盘可保存到历史。' });
@@ -3765,6 +4046,15 @@ function App() {
     try {
       await copyText(reviewReport.markdown);
       showToast({ type: 'success', text: '已复制复盘报告 Markdown。' });
+    } catch {
+      showToast({ type: 'error', text: '复制失败：浏览器拒绝了剪贴板操作。' });
+    }
+  };
+
+  const copyNaturalLanguageCoachReport = async () => {
+    try {
+      await copyText(naturalLanguageCoach.markdown);
+      showToast({ type: 'success', text: '已复制自然语言教练 Markdown。' });
     } catch {
       showToast({ type: 'error', text: '复制失败：浏览器拒绝了剪贴板操作。' });
     }
@@ -4079,8 +4369,11 @@ function App() {
 
           <ReviewReportPanel
             report={reviewReport}
+            naturalLanguageCoach={naturalLanguageCoach}
             onCopy={copyReviewReport}
+            onCopyCoach={copyNaturalLanguageCoachReport}
             onExport={exportReviewReport}
+            onExportCoach={exportNaturalLanguageCoachReport}
             onSave={saveReviewReportToHistory}
           />
 
@@ -5249,13 +5542,19 @@ function StrengthProfilePanel({ profile, historyStats }: { profile: StrengthProf
 
 function ReviewReportPanel({
   report,
+  naturalLanguageCoach,
   onCopy,
+  onCopyCoach,
   onExport,
+  onExportCoach,
   onSave,
 }: {
   report: ReviewReport;
+  naturalLanguageCoach: NaturalLanguageCoachReport;
   onCopy: () => void;
+  onCopyCoach: () => void;
   onExport: () => void;
+  onExportCoach: () => void;
   onSave: () => void;
 }) {
   return (
@@ -5300,6 +5599,49 @@ function ReviewReportPanel({
       <div className="review-training-advice">
         <strong>下一次训练建议</strong>
         <p>{report.trainingAdvice}</p>
+      </div>
+
+      <div className="natural-language-coach-panel">
+        <div className="natural-language-coach-header">
+          <div>
+            <strong>自然语言教练</strong>
+            <p>{naturalLanguageCoach.summary}</p>
+          </div>
+          <div className="natural-language-coach-actions">
+            <button type="button" onClick={onCopyCoach}>
+              复制教练报告
+            </button>
+            <button type="button" onClick={onExportCoach}>
+              导出教练报告
+            </button>
+          </div>
+        </div>
+
+        <div className="natural-language-coach-grid">
+          <article>
+            <span>推荐练习主题</span>
+            {naturalLanguageCoach.practiceThemes.slice(0, 4).map((theme) => (
+              <p key={`${theme.theme}-${theme.source}`}>
+                <strong>{theme.theme}</strong> · {theme.priority} · {theme.evidence}。{theme.nextAction}
+              </p>
+            ))}
+          </article>
+          <article>
+            <span>关键局面解释</span>
+            {naturalLanguageCoach.positionExplanations.length ? (
+              naturalLanguageCoach.positionExplanations.slice(0, 3).map((explanation) => (
+                <div className="natural-language-position" key={explanation.moveLabel}>
+                  <strong>{explanation.title}</strong>
+                  <p>{explanation.whyBad}</p>
+                  <p>{explanation.candidateGuidance}</p>
+                  <small>主题：{explanation.practiceThemes.join('、') || '候选着法与风险控制'}</small>
+                </div>
+              ))
+            ) : (
+              <p>运行“一键全局分析”后，会根据关键失误生成可复制的中文教练解释。</p>
+            )}
+          </article>
+        </div>
       </div>
     </section>
   );
@@ -5720,6 +6062,9 @@ export {
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
   buildReviewReport,
+  buildNaturalLanguageCoachReport,
+  buildNaturalLanguagePositionExplanation,
+  buildPracticeThemeRecommendations,
   buildReviewReportHistoryStats,
   createReviewReportHistoryItem,
   filterReviewReportHistory,
