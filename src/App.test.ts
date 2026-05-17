@@ -13,6 +13,7 @@ import {
   buildMiddlegamePlanTraining,
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
+  buildGlobalAnalysisPartialReport,
   buildGlobalAnalysisReport,
   buildKeyMomentSummary,
   classifyKeyAnalysisMoment,
@@ -539,6 +540,47 @@ describe('analysis controls, cache, and key moment helpers', () => {
     expect(report[0].multiPvLines[1]).toMatchObject({ rank: 2, pv: ['e5'] });
   });
 
+  it('uses rank-1 MultiPV score and PV as the completed primary analysis when lower-ranked info arrived last', () => {
+    const completed = completeEngineAnalysisFromRequest({
+      request: {
+        latest: {
+          depth: 12,
+          score: { type: 'cp', value: 10 },
+          pv: ['d4', 'd5'],
+        },
+        multiPvLines: [
+          { rank: 2, score: { type: 'cp', value: 10 }, pv: ['d4', 'd5'], uci: ['d2d4', 'd7d5'], firstMoveSan: 'd4', displayScore: '+0.10' },
+          { rank: 1, score: { type: 'cp', value: 35 }, pv: ['e4', 'e5'], uci: ['e2e4', 'e7e5'], firstMoveSan: 'e4', displayScore: '+0.35' },
+        ],
+      },
+      bestMove: 'e2e4',
+      bestMoveSan: 'e4',
+    });
+
+    expect(completed.score).toEqual({ type: 'cp', value: 35 });
+    expect(completed.pv).toEqual(['e4', 'e5']);
+  });
+
+  it('builds a cancellable partial report only for moves whose before and after positions are complete', () => {
+    const partial = buildGlobalAnalysisPartialReport({
+      moves: [
+        { san: 'e4', color: 'w' },
+        { san: 'e5', color: 'b' },
+        { san: 'Nf3', color: 'w' },
+      ],
+      positionScores: [20, 10, null],
+      bestMoves: ['e4', 'Nf6'],
+      primaryPvs: [['e4', 'e5'], ['Nf6']],
+      multiPvByMove: [
+        [{ rank: 1, score: { type: 'cp', value: 20 }, pv: ['e4'], uci: ['e2e4'], firstMoveSan: 'e4', displayScore: '+0.20' }],
+        [{ rank: 1, score: { type: 'cp', value: 10 }, pv: ['Nf6'], uci: ['g8f6'], firstMoveSan: 'Nf6', displayScore: '+0.10' }],
+      ],
+    });
+
+    expect(partial).toHaveLength(1);
+    expect(partial[0]).toMatchObject({ san: 'e4', bestMoveSan: 'e4', beforeScore: 20, afterScore: 10 });
+  });
+
 
   it('parses Stockfish MultiPV info into ranked SAN/UCI candidate lines with normalized score ordering', () => {
     const fen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -642,7 +684,7 @@ describe('analysis controls, cache, and key moment helpers', () => {
       shouldMarkCanceled: true,
       shouldKeepExistingAnalysis: true,
       nextIsAnalyzing: false,
-      nextProgress: '已取消：Worker 已停止；上一次已完成分析不会被本次取消污染。',
+      nextProgress: '已取消：Worker 已停止；已完成分析结果不会被本次取消污染。',
       nextError: '',
       nextEngineStatus: 'ready',
       nextButtonLabel: '分析整盘',

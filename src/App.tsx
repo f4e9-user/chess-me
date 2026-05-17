@@ -106,6 +106,7 @@ type StockfishAnalysis = {
   bestMove: string;
   bestMoveSan: string;
   pv: string[];
+  multiPvLines?: MultiPvLine[];
 };
 
 type EvaluationPerspective = 'white' | 'sideToMove' | 'board';
@@ -780,7 +781,7 @@ function buildGlobalAnalysisCancellationPlan({
     nextAnalysis: existingAnalysis,
     nextIsAnalyzing: false,
     nextCancelToken: false,
-    nextProgress: `已取消：${hasWorker ? 'Worker 已停止；' : ''}上一次已完成分析不会被本次取消污染。`,
+    nextProgress: `已取消：${hasWorker ? 'Worker 已停止；' : ''}已完成分析结果不会被本次取消污染。`,
     nextError: '',
     nextEngineStatus: hasWorker ? 'ready' : 'idle',
     nextButtonLabel: '分析整盘',
@@ -817,6 +818,24 @@ function buildGlobalAnalysisReport({
       primaryPv: primaryPvs?.[index] ?? [],
       multiPvLines: multiPvByMove?.[index] ?? [],
     };
+  });
+}
+
+function buildGlobalAnalysisPartialReport(input: {
+  moves: Array<Pick<Move, 'san' | 'color'>>;
+  positionScores: Array<number | null>;
+  bestMoves: string[];
+  primaryPvs?: string[][];
+  multiPvByMove?: MultiPvLine[][];
+}) {
+  const incompleteIndex = input.moves.findIndex(
+    (_, index) => input.positionScores[index] === undefined || input.positionScores[index + 1] == null,
+  );
+  const moves = incompleteIndex === -1 ? input.moves : input.moves.slice(0, incompleteIndex);
+
+  return buildGlobalAnalysisReport({
+    ...input,
+    moves,
   });
 }
 
@@ -986,7 +1005,7 @@ function completeEngineAnalysisFromRequest({ request, bestMove, bestMoveSan }: C
 
   return {
     depth: request?.latest.depth ?? 0,
-    score: request?.latest.score ?? null,
+    score: multiPvLines[0]?.score ?? request?.latest.score ?? null,
     pv: multiPvLines[0]?.pv ?? request?.latest.pv ?? [],
     bestMove,
     bestMoveSan,
@@ -2982,17 +3001,28 @@ function App() {
         bestMoves[index] = beforeAnalysis.bestMoveSan || beforeAnalysis.bestMove;
         primaryPvs[index] = beforeAnalysis.pv;
         multiPvByMove[index] = beforeAnalysis.multiPvLines;
+
+        const afterFen = result.positions[index + 1]?.fen;
+        if (afterFen) {
+          setGlobalAnalysisProgress(`${config.label}分析第 ${index + 1}/${result.moves.length} 手之后局面（深度 ${config.depth}）…`);
+          const afterAnalysis = await analyzeFenOnce(afterFen, config);
+          positionScores[index + 1] = scoreToWhiteCentipawns(afterAnalysis.score);
+        }
+
+        const partialReport = buildGlobalAnalysisPartialReport({
+          moves: result.moves,
+          positionScores,
+          bestMoves,
+          primaryPvs,
+          multiPvByMove,
+        });
+        if (partialReport.length > 0) {
+          setGlobalAnalysis(partialReport);
+        }
       }
 
       if (globalAnalysisCancelRef.current) {
         throw new Error('整盘分析已取消。');
-      }
-
-      const finalFen = result.positions[result.moves.length]?.fen;
-      if (finalFen) {
-        setGlobalAnalysisProgress('分析终局局面…');
-        const finalAnalysis = await analyzeFenOnce(finalFen, config);
-        positionScores[result.moves.length] = scoreToWhiteCentipawns(finalAnalysis.score);
       }
 
       const report = buildGlobalAnalysisReport({
@@ -3013,7 +3043,7 @@ function App() {
     } catch (error) {
       if (globalAnalysisCancelRef.current || (error instanceof Error && error.message.includes('已取消'))) {
         setGlobalAnalysisError('');
-        setGlobalAnalysisProgress('已取消：上一次已完成分析不会被本次取消污染，Worker 已停止。');
+        setGlobalAnalysisProgress('已取消：已完成分析结果不会被本次取消污染，Worker 已停止。');
         setGlobalAnalysisCacheStatus('已取消');
         setEngineStatus(engineRef.current ? 'ready' : 'idle');
         showToast({ type: 'error', text: '整盘分析已取消。' });
@@ -4888,6 +4918,7 @@ export {
   buildBulkPgnLibraryInsights,
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
+  buildGlobalAnalysisPartialReport,
   buildGlobalAnalysisReport,
   buildKeyMomentSummary,
   buildMiddlegamePlanTraining,
