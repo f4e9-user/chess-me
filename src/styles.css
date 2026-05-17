@@ -501,6 +501,9 @@ h2 {
 .mistake-card p,
 .mistake-card small,
 .global-analysis-header p,
+.global-analysis-header small,
+.analysis-preset-help,
+.analysis-key-summary,
 .candidate-training-header p,
 .candidate-result p,
 .guess-hint,
@@ -583,11 +586,58 @@ h2 {
 .candidate-training-header button,
 .mistake-book-header button,
 .mistake-card-actions button,
-.global-analysis-header button {
+.global-analysis-header button,
+.analysis-depth-controls button,
+.analysis-filter-controls button {
   min-height: 40px;
   border-radius: 8px;
   padding: 0 12px;
   font-weight: 800;
+}
+
+.global-analysis-actions,
+.analysis-control-row,
+.analysis-depth-controls,
+.analysis-filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.global-analysis-actions {
+  justify-content: flex-end;
+}
+
+.analysis-control-row {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.analysis-depth-controls button.active,
+.analysis-filter-controls button.active {
+  border-color: rgba(34, 111, 84, 0.45);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.analysis-cancel-button:not(:disabled) {
+  border-color: rgba(169, 68, 66, 0.38);
+  color: #a94442;
+}
+
+.analysis-cancel-button:not(:disabled):hover {
+  background: #fff1ef;
+}
+
+.analysis-preset-help {
+  margin: 0;
+}
+
+.analysis-multipv {
+  grid-column: 1 / -1;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
 }
 
 .guess-result.correct {
