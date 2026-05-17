@@ -13,7 +13,7 @@ Chess Me 是一个面向个人棋力提升的国际象棋复盘与训练工具�
 
 ## 当前分支功能
 
-当前分支：`hermes/20260514-234136`
+当前分支：`feat/analysis-controls-cache`
 
 ### 1. PGN / FEN 复盘
 
