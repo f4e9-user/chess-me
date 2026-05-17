@@ -141,6 +141,24 @@ type CandidateMoveEntry = {
   reason: string;
 };
 
+type CandidateMultiPvFeedbackLabel = '最佳着法' | '可接受着法' | '风险着法' | '漏算着法';
+
+type CandidateMultiPvComparisonRow = CandidateMoveEntry & {
+  isSelected: boolean;
+  matchedRank: number | null;
+  scoreGapCp: number | null;
+  feedbackLabel: CandidateMultiPvFeedbackLabel;
+  keyVariation: string;
+  explanation: string;
+};
+
+type CandidateMultiPvComparison = {
+  multiPvAvailable: boolean;
+  rows: CandidateMultiPvComparisonRow[];
+  selectedRow: CandidateMultiPvComparisonRow | null;
+  summary: string;
+};
+
 type CandidateMoveTrainingResult = {
   entries: CandidateMoveEntry[];
   candidateCount: number;
@@ -155,6 +173,7 @@ type CandidateMoveTrainingResult = {
   selectedIsBest: boolean;
   answerInCandidatesButNotSelected: boolean;
   sortingScore: number;
+  multiPvComparison: CandidateMultiPvComparison;
   summary: string;
 };
 
@@ -1803,16 +1822,142 @@ function parseCandidateMoveEntries(rawCandidates: string): CandidateMoveEntry[] 
     .filter((entry) => entry.moveSan.length > 0);
 }
 
-function analyzeCandidateMoveTraining({
+function getScoreGapCentipawns(bestScore: StockfishAnalysis['score'], candidateScore: StockfishAnalysis['score']) {
+  const bestCp = scoreToWhiteCentipawns(bestScore);
+  const candidateCp = scoreToWhiteCentipawns(candidateScore);
+  if (bestCp === null || candidateCp === null) {
+    return null;
+  }
+
+  return Math.abs(bestCp - candidateCp);
+}
+
+function classifyCandidateMultiPvFeedback({
+  matchedLine,
+  scoreGapCp,
+  hasMultiPv,
+  isBestSan,
+}: {
+  matchedLine: MultiPvLine | undefined;
+  scoreGapCp: number | null;
+  hasMultiPv: boolean;
+  isBestSan: boolean;
+}): CandidateMultiPvFeedbackLabel {
+  if (!hasMultiPv) {
+    return isBestSan ? '最佳着法' : '可接受着法';
+  }
+
+  if (!matchedLine) {
+    return '漏算着法';
+  }
+
+  if (matchedLine.rank === 1) {
+    return '最佳着法';
+  }
+
+  if (scoreGapCp !== null && scoreGapCp <= 80) {
+    return '可接受着法';
+  }
+
+  return '风险着法';
+}
+
+function buildCandidateFeedbackExplanation(label: CandidateMultiPvFeedbackLabel, matchedLine: MultiPvLine | undefined, scoreGapCp: number | null) {
+  if (label === '漏算着法') {
+    return '这步没有进入当前 MultiPV 候选线，说明训练时可能漏算了引擎认为更关键的分支。';
+  }
+
+  if (!matchedLine) {
+    return label === '最佳着法'
+      ? '暂无 MultiPV 排名，但这步与当前引擎首选一致。'
+      : '暂无 MultiPV 排名，先用实战答案和首选着法做降级判断。';
+  }
+
+  const gapText = scoreGapCp === null ? '评价差暂不可比' : `与最佳线相差 ${scoreGapCp}cp`;
+  if (label === '最佳着法') {
+    return `命中 MultiPV 第 1 候选，${gapText}，应优先纳入候选排序。`;
+  }
+
+  if (label === '可接受着法') {
+    return `命中 MultiPV 第 ${matchedLine.rank} 候选，${gapText}，属于可继续计算的备选方案。`;
+  }
+
+  return `命中 MultiPV 第 ${matchedLine.rank} 候选，但${gapText}，需要解释风险和战术反驳。`;
+}
+
+function buildCandidateMultiPvComparison({
   rawCandidates,
   selectedSan,
   actualSan,
   stockfishBestSan,
+  multiPvLines,
 }: {
   rawCandidates: string;
   selectedSan: string;
   actualSan: string;
   stockfishBestSan: string;
+  multiPvLines: MultiPvLine[];
+}): CandidateMultiPvComparison {
+  const entries = parseCandidateMoveEntries(rawCandidates);
+  const rankedLines = rankMultiPvLines(multiPvLines);
+  const bestLine = rankedLines[0];
+  const hasMultiPv = rankedLines.length > 0;
+  const normalizedSelected = normalizeSan(selectedSan);
+  const normalizedBest = normalizeSan(stockfishBestSan || bestLine?.firstMoveSan || '');
+  const normalizedActual = normalizeSan(actualSan);
+
+  const rows = entries.map((entry) => {
+    const normalizedMove = normalizeSan(entry.moveSan);
+    const matchedLine = rankedLines.find((line) => normalizeSan(line.firstMoveSan || line.pv[0] || '') === normalizedMove);
+    const scoreGapCp = matchedLine ? getScoreGapCentipawns(bestLine?.score ?? null, matchedLine.score) : null;
+    const feedbackLabel = classifyCandidateMultiPvFeedback({
+      matchedLine,
+      scoreGapCp,
+      hasMultiPv,
+      isBestSan: Boolean(normalizedBest) && normalizedMove === normalizedBest,
+    });
+
+    return {
+      ...entry,
+      isSelected: normalizedMove === normalizedSelected,
+      matchedRank: matchedLine?.rank ?? null,
+      scoreGapCp,
+      feedbackLabel,
+      keyVariation: matchedLine?.pv.length ? matchedLine.pv.join(' ') : '未命中 MultiPV 候选线',
+      explanation: buildCandidateFeedbackExplanation(feedbackLabel, matchedLine, scoreGapCp),
+    } satisfies CandidateMultiPvComparisonRow;
+  });
+
+  const selectedRow = rows.find((row) => row.isSelected) ?? null;
+  const actualInMultiPv = rankedLines.find((line) => normalizeSan(line.firstMoveSan || line.pv[0] || '') === normalizedActual);
+  const summary = hasMultiPv
+    ? selectedRow?.matchedRank
+      ? `最终选择 ${selectedRow.moveSan} 命中 MultiPV 第 ${selectedRow.matchedRank} 候选${
+          selectedRow.scoreGapCp === null ? '' : `，与最佳线相差 ${selectedRow.scoreGapCp}cp`
+        }。${actualInMultiPv ? `实战答案在第 ${actualInMultiPv.rank} 候选线。` : '实战答案没有命中当前 MultiPV 候选线。'}`
+      : `最终选择 ${selectedSan || '未选择'} 没有命中当前 MultiPV 候选线，需要回看最佳线 ${bestLine?.pv.join(' ') || '暂无'}。`
+    : '暂无 MultiPV 数据：已降级为候选着、实战答案和 Stockfish 首选的基础对比。';
+
+  return {
+    multiPvAvailable: hasMultiPv,
+    rows,
+    selectedRow,
+    summary,
+  };
+}
+
+function analyzeCandidateMoveTraining({
+  rawCandidates,
+  selectedSan,
+  actualSan,
+  stockfishBestSan,
+  multiPvLines = [],
+}: {
+  rawCandidates: string;
+  selectedSan: string;
+  actualSan: string;
+  stockfishBestSan: string;
+  multiPvLines?: MultiPvLine[];
 }): CandidateMoveTrainingResult {
   const entries = parseCandidateMoveEntries(rawCandidates);
   const candidateCount = entries.length;
@@ -1831,12 +1976,20 @@ function analyzeCandidateMoveTraining({
       (100 / 3),
   );
   const validationMessage = isValid ? '' : '至少写出 2 个候选着法，并为每个候选写一句理由。';
+  const multiPvComparison = buildCandidateMultiPvComparison({
+    rawCandidates,
+    selectedSan,
+    actualSan,
+    stockfishBestSan,
+    multiPvLines,
+  });
   const summary = isValid
     ? [
         `候选 ${candidateCount} 个`,
         hasActualInCandidates ? '实战答案进入候选' : '实战答案未进入候选',
         stockfishBestSan ? (hasBestInCandidates ? '引擎首选进入候选' : '引擎首选未进入候选') : '暂未分析引擎首选',
         answerInCandidatesButNotSelected ? '答案在候选里，但最终没选中' : '最终选择与候选排序一致性可复盘',
+        multiPvComparison.summary,
         `排序得分 ${sortingScore}`,
       ].join(' · ')
     : validationMessage;
@@ -1855,6 +2008,7 @@ function analyzeCandidateMoveTraining({
     selectedIsBest,
     answerInCandidatesButNotSelected,
     sortingScore,
+    multiPvComparison,
     summary,
   };
 }
@@ -2828,6 +2982,7 @@ function App() {
           selectedSan: move.san,
           actualSan: nextOriginalMove.san,
           stockfishBestSan: analysis?.bestMoveSan ?? '',
+          multiPvLines: analysis?.multiPvLines ?? [],
         })
       : null;
     setGuessResult(guessAnalysis);
@@ -4133,6 +4288,33 @@ function GuessTrainingPanel({
               ))}
             </ul>
           )}
+          {candidateResult.isValid && (
+            <div className="candidate-multipv-comparison">
+              <div className="candidate-multipv-header">
+                <span>MultiPV 对比</span>
+                <strong>{candidateResult.multiPvComparison.multiPvAvailable ? '已复用分析缓存' : '降级显示'}</strong>
+              </div>
+              <p>{candidateResult.multiPvComparison.summary}</p>
+              <div className="candidate-multipv-grid">
+                {candidateResult.multiPvComparison.rows.map((row) => (
+                  <div
+                    className={`candidate-multipv-row ${row.isSelected ? 'selected' : ''}`}
+                    key={`${row.moveSan}-${row.feedbackLabel}-${row.matchedRank ?? 'miss'}`}
+                  >
+                    <div>
+                      <span>{row.moveSan}</span>
+                      <strong>{row.feedbackLabel}</strong>
+                    </div>
+                    <p>{row.explanation}</p>
+                    <small>
+                      {row.matchedRank ? `排名 #${row.matchedRank}` : '未命中排名'} ·{' '}
+                      {row.scoreGapCp === null ? '评价差待分析' : `评价差 ${row.scoreGapCp}cp`} · 关键变例：{row.keyVariation}
+                    </small>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -4916,6 +5098,7 @@ export {
   buildReviewReport,
   buildStrengthProfile,
   buildBulkPgnLibraryInsights,
+  buildCandidateMultiPvComparison,
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisPartialReport,

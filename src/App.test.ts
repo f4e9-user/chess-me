@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeCandidateMoveTraining,
   analyzeGuessMove,
+  buildCandidateMultiPvComparison,
   buildDailyTrainingPlan,
   buildMistakeCardFromGuess,
   buildOpeningImprovementPlan,
@@ -121,16 +122,90 @@ describe('candidate move training helpers', () => {
     expect(result.summary).toContain('答案在候选里，但最终没选中');
   });
 
-  it('requires at least two candidate moves before scoring', () => {
-    const result = analyzeCandidateMoveTraining({
-      rawCandidates: 'Nf3 - 发展',
+  it('compares user candidates with MultiPV ranks, score gaps, and feedback labels', () => {
+    const result = buildCandidateMultiPvComparison({
+      rawCandidates: 'Nf3 - 开发并守住中心\nBc4 - 盯住 f7\nd4 - 直接抢中心',
+      selectedSan: 'Bc4',
+      actualSan: 'Nf3',
+      stockfishBestSan: 'Nf3',
+      multiPvLines: [
+        {
+          rank: 1,
+          score: { type: 'cp', value: 45 },
+          pv: ['Nf3', 'Nc6', 'Bb5'],
+          uci: ['g1f3', 'b8c6', 'f1b5'],
+          firstMoveSan: 'Nf3',
+          displayScore: '+0.45',
+        },
+        {
+          rank: 2,
+          score: { type: 'cp', value: 12 },
+          pv: ['Bc4', 'Nf6'],
+          uci: ['f1c4', 'g8f6'],
+          firstMoveSan: 'Bc4',
+          displayScore: '+0.12',
+        },
+        {
+          rank: 3,
+          score: { type: 'cp', value: -90 },
+          pv: ['d4', 'exd4'],
+          uci: ['d2d4', 'e5d4'],
+          firstMoveSan: 'd4',
+          displayScore: '-0.90',
+        },
+      ],
+    });
+
+    expect(result.multiPvAvailable).toBe(true);
+    expect(result.rows.map((row) => row.feedbackLabel)).toEqual(['最佳着法', '可接受着法', '风险着法']);
+    expect(result.rows[1]).toMatchObject({
+      moveSan: 'Bc4',
+      matchedRank: 2,
+      isSelected: true,
+      scoreGapCp: 33,
+      keyVariation: 'Bc4 Nf6',
+    });
+    expect(result.summary).toContain('命中 MultiPV 第 2 候选');
+    expect(result.summary).toContain('与最佳线相差 33cp');
+  });
+
+  it('marks candidates that miss all MultiPV lines and degrades when MultiPV is unavailable', () => {
+    const missed = buildCandidateMultiPvComparison({
+      rawCandidates: 'h4 - 制造王翼空间\nNf3 - 正常开发',
+      selectedSan: 'h4',
+      actualSan: 'Nf3',
+      stockfishBestSan: 'Nf3',
+      multiPvLines: [
+        {
+          rank: 1,
+          score: { type: 'cp', value: 30 },
+          pv: ['Nf3', 'Nc6'],
+          uci: ['g1f3', 'b8c6'],
+          firstMoveSan: 'Nf3',
+          displayScore: '+0.30',
+        },
+      ],
+    });
+
+    expect(missed.rows[0]).toMatchObject({
+      moveSan: 'h4',
+      matchedRank: null,
+      feedbackLabel: '漏算着法',
+      keyVariation: '未命中 MultiPV 候选线',
+    });
+    expect(missed.summary).toContain('没有命中当前 MultiPV 候选线');
+
+    const degraded = buildCandidateMultiPvComparison({
+      rawCandidates: 'Nf3 - 开发\nBc4 - 活子',
       selectedSan: 'Nf3',
       actualSan: 'Nf3',
       stockfishBestSan: 'Nf3',
+      multiPvLines: [],
     });
 
-    expect(result.isValid).toBe(false);
-    expect(result.validationMessage).toContain('至少写出 2 个候选着法');
+    expect(degraded.multiPvAvailable).toBe(false);
+    expect(degraded.summary).toContain('暂无 MultiPV 数据');
+    expect(degraded.rows[0]).toMatchObject({ feedbackLabel: '最佳着法', matchedRank: null });
   });
 });
 
