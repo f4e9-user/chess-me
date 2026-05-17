@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { Chess, type Color, type Move, type PieceSymbol, type Square } from 'chess.js';
 
 type ReplayMode = 'pgn' | 'fen';
@@ -31,20 +31,37 @@ type ParseResult = {
   source: ReplayMode;
 };
 
+type BulkPgnSource = 'lichess' | 'chess.com' | 'manual' | 'unknown';
+type BulkPgnPlayerColor = 'white' | 'black' | 'unknown';
+type BulkPgnPlayerResult = 'win' | 'loss' | 'draw' | 'ongoing' | 'unknown';
+type BulkPgnSortBy = 'date' | 'opponent' | 'result' | 'opening' | 'source' | 'important';
+
 type BulkPgnFileInput = {
   filename: string;
   content: string;
+  source?: BulkPgnSource;
 };
 
 type BulkPgnGameSummary = {
   id: string;
   filename: string;
   event: string;
+  site: string;
+  playedAt: string;
+  source: BulkPgnSource;
   white: string;
   black: string;
+  opponent: string;
+  playerColor: BulkPgnPlayerColor;
+  playerResult: BulkPgnPlayerResult;
   result: string;
+  openingEco: string;
+  openingName: string;
   moveCount: number;
   content: string;
+  fingerprint: string;
+  isImportant: boolean;
+  historyReportId?: string;
 };
 
 type BulkPgnImportError = {
@@ -53,10 +70,31 @@ type BulkPgnImportError = {
   message: string;
 };
 
+type BulkPgnDuplicate = {
+  filename: string;
+  event: string;
+  duplicateOf: string;
+};
+
 type BulkPgnLibrary = {
   games: BulkPgnGameSummary[];
   errors: BulkPgnImportError[];
+  duplicates: BulkPgnDuplicate[];
   summary: string;
+};
+
+type BulkPgnLibraryFilters = {
+  source?: BulkPgnSource | 'all';
+  dateFrom?: string;
+  dateTo?: string;
+  opponent?: string;
+  result?: BulkPgnPlayerResult | 'all';
+  color?: BulkPgnPlayerColor | 'all';
+  opening?: string;
+  importantOnly?: boolean;
+  sortBy?: BulkPgnSortBy;
+  sortDirection?: 'asc' | 'desc';
+  playerName?: string;
 };
 
 type BulkPgnLibraryInsights = {
@@ -563,17 +601,53 @@ function splitPgnGames(content: string) {
 }
 
 function getPgnHeader(content: string, key: string) {
-  const match = content.match(new RegExp(`\\[${key}\\s+"([^"]*)"\\]`));
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = content.match(new RegExp(`\\[${escapedKey}\\s+"([^"]*)"\\]`));
   return match?.[1]?.trim() || '未知';
 }
 
-function parseBulkPgnLibrary(files: BulkPgnFileInput[]): BulkPgnLibrary {
+function normalizePgnFingerprint(content: string) {
+  return content.replace(/\s+/g, ' ').replace(/\s*(1-0|0-1|1\/2-1\/2|\*)\s*$/, ' $1').trim().toLowerCase();
+}
+
+function normalizePgnDate(rawDate: string) {
+  if (!rawDate || rawDate === '未知') return '';
+  const parts = rawDate.split(/[.-]/).map((part) => part.replace(/\?/g, '').padStart(2, '0'));
+  if (parts.length < 3 || parts.some((part) => !part.trim())) return rawDate.replace(/\./g, '-');
+  return `${parts[0]}-${parts[1]}-${parts[2]}`;
+}
+
+function inferBulkPgnSource(filename: string, site: string, explicitSource?: BulkPgnSource): BulkPgnSource {
+  if (explicitSource && explicitSource !== 'unknown') return explicitSource;
+  const haystack = `${filename} ${site}`.toLowerCase();
+  if (haystack.includes('lichess.org') || haystack.includes('lichess')) return 'lichess';
+  if (haystack.includes('chess.com') || haystack.includes('chesscom')) return 'chess.com';
+  return 'manual';
+}
+
+function deriveBulkPgnPlayerMeta(game: Pick<BulkPgnGameSummary, 'white' | 'black' | 'result'>, playerName = 'Me') {
+  const normalizedPlayer = playerName.trim().toLowerCase();
+  const isWhite = game.white.trim().toLowerCase() === normalizedPlayer;
+  const isBlack = game.black.trim().toLowerCase() === normalizedPlayer;
+  const playerColor: BulkPgnPlayerColor = isWhite ? 'white' : isBlack ? 'black' : 'unknown';
+  const opponent = isWhite ? game.black : isBlack ? game.white : `${game.white} / ${game.black}`;
+  let playerResult: BulkPgnPlayerResult = 'unknown';
+  if (game.result === '1/2-1/2') playerResult = 'draw';
+  else if (game.result === '*') playerResult = 'ongoing';
+  else if ((game.result === '1-0' && isWhite) || (game.result === '0-1' && isBlack)) playerResult = 'win';
+  else if ((game.result === '1-0' && isBlack) || (game.result === '0-1' && isWhite)) playerResult = 'loss';
+  return { opponent, playerColor, playerResult };
+}
+
+function parseBulkPgnLibrary(files: BulkPgnFileInput[], history: ReviewReportHistoryItem[] = []): BulkPgnLibrary {
   const games: BulkPgnGameSummary[] = [];
   const errors: BulkPgnImportError[] = [];
+  const duplicates: BulkPgnDuplicate[] = [];
+  const seen = new Map<string, string>();
+  const historyByFingerprint = new Map(history.map((item) => [normalizePgnFingerprint(item.pgn), item]));
 
   files.forEach((file) => {
     const chunks = splitPgnGames(file.content);
-
     if (chunks.length === 0) {
       errors.push({ filename: file.filename, event: '未知', message: '文件为空或不包含 PGN。' });
       return;
@@ -582,25 +656,47 @@ function parseBulkPgnLibrary(files: BulkPgnFileInput[]): BulkPgnLibrary {
     chunks.forEach((chunk, index) => {
       const event = getPgnHeader(chunk, 'Event');
       const parsed = parsePgn(chunk);
-
       if (parsed.error || parsed.moves.length === 0) {
-        errors.push({
-          filename: file.filename,
-          event,
-          message: parsed.error || '棋谱没有可导入的着法。',
-        });
+        errors.push({ filename: file.filename, event, message: parsed.error || '棋谱没有可导入的着法。' });
         return;
       }
 
+      const fingerprint = normalizePgnFingerprint(chunk);
+      const duplicateOf = seen.get(fingerprint);
+      if (duplicateOf) {
+        duplicates.push({ filename: file.filename, event, duplicateOf });
+        return;
+      }
+
+      const site = getPgnHeader(chunk, 'Site');
+      const result = getPgnHeader(chunk, 'Result');
+      const white = getPgnHeader(chunk, 'White');
+      const black = getPgnHeader(chunk, 'Black');
+      const opening = identifyOpening(parsed.moves.map((move) => move.san));
+      const playerMeta = deriveBulkPgnPlayerMeta({ white, black, result });
+      const historyItem = historyByFingerprint.get(fingerprint);
+      const id = `${file.filename}-${index + 1}-${event}`;
+      seen.set(fingerprint, id);
       games.push({
-        id: `${file.filename}-${index + 1}-${event}`,
+        id,
         filename: file.filename,
         event,
-        white: getPgnHeader(chunk, 'White'),
-        black: getPgnHeader(chunk, 'Black'),
-        result: getPgnHeader(chunk, 'Result'),
+        site,
+        playedAt: normalizePgnDate(getPgnHeader(chunk, 'Date')),
+        source: inferBulkPgnSource(file.filename, site, file.source),
+        white,
+        black,
+        opponent: playerMeta.opponent,
+        playerColor: playerMeta.playerColor,
+        playerResult: playerMeta.playerResult,
+        result,
+        openingEco: opening.eco,
+        openingName: opening.name,
         moveCount: parsed.moves.length,
         content: chunk,
+        fingerprint,
+        isImportant: Boolean(historyItem?.isFavorite),
+        historyReportId: historyItem?.id,
       });
     });
   });
@@ -608,8 +704,46 @@ function parseBulkPgnLibrary(files: BulkPgnFileInput[]): BulkPgnLibrary {
   return {
     games,
     errors,
-    summary: `导入 ${games.length} 盘${errors.length > 0 ? `，失败 ${errors.length} 盘` : ''}`,
+    duplicates,
+    summary: `导入 ${games.length} 盘${duplicates.length > 0 ? `，去重 ${duplicates.length} 盘` : ''}${errors.length > 0 ? `，失败 ${errors.length} 盘` : ''}`,
   };
+}
+
+function toggleBulkPgnGameImportant(games: BulkPgnGameSummary[], id: string): BulkPgnGameSummary[] {
+  return games.map((game) => (game.id === id ? { ...game, isImportant: !game.isImportant } : game));
+}
+
+function filterBulkPgnLibraryGames(games: BulkPgnGameSummary[], filters: BulkPgnLibraryFilters = {}): BulkPgnGameSummary[] {
+  const queryOpponent = filters.opponent?.trim().toLowerCase();
+  const queryOpening = filters.opening?.trim().toLowerCase();
+  const result = games.filter((game) => {
+    const playerMeta = deriveBulkPgnPlayerMeta(game, filters.playerName ?? 'Me');
+    if (filters.source && filters.source !== 'all' && game.source !== filters.source) return false;
+    if (filters.dateFrom && game.playedAt && game.playedAt < filters.dateFrom) return false;
+    if (filters.dateTo && game.playedAt && game.playedAt > filters.dateTo) return false;
+    if (queryOpponent && !playerMeta.opponent.toLowerCase().includes(queryOpponent)) return false;
+    if (filters.result && filters.result !== 'all' && playerMeta.playerResult !== filters.result) return false;
+    if (filters.color && filters.color !== 'all' && playerMeta.playerColor !== filters.color) return false;
+    if (queryOpening && !`${game.openingEco} ${game.openingName}`.toLowerCase().includes(queryOpening)) return false;
+    if (filters.importantOnly && !game.isImportant) return false;
+    return true;
+  });
+  const direction = filters.sortDirection === 'asc' ? 1 : -1;
+  const sortBy = filters.sortBy ?? 'date';
+  return result.sort((a, b) => {
+    const aMeta = deriveBulkPgnPlayerMeta(a, filters.playerName ?? 'Me');
+    const bMeta = deriveBulkPgnPlayerMeta(b, filters.playerName ?? 'Me');
+    const values: Record<BulkPgnSortBy, [string | number, string | number]> = {
+      date: [a.playedAt, b.playedAt],
+      opponent: [aMeta.opponent, bMeta.opponent],
+      result: [aMeta.playerResult, bMeta.playerResult],
+      opening: [a.openingName, b.openingName],
+      source: [a.source, b.source],
+      important: [Number(a.isImportant), Number(b.isImportant)],
+    };
+    const [left, right] = values[sortBy];
+    return String(left).localeCompare(String(right), 'zh-CN', { numeric: true }) * direction;
+  });
 }
 
 function buildBulkPgnLibraryInsights(games: BulkPgnGameSummary[]): BulkPgnLibraryInsights {
@@ -2746,6 +2880,13 @@ function App() {
   const [engineLog, setEngineLog] = useState<string[]>([]);
   const [savedVariations, setSavedVariations] = useState<SavedVariation[]>([]);
   const [bulkPgnLibrary, setBulkPgnLibrary] = useState<BulkPgnLibrary | null>(null);
+  const [bulkPgnFilters, setBulkPgnFilters] = useState<BulkPgnLibraryFilters>({
+    source: 'all',
+    result: 'all',
+    color: 'all',
+    sortBy: 'date',
+    sortDirection: 'desc',
+  });
   const [isGuessMode, setIsGuessMode] = useState(false);
   const [guessResult, setGuessResult] = useState<GuessMoveResult | null>(null);
   const [pgnReplyMessage, setPgnReplyMessage] = useState('');
@@ -2836,9 +2977,13 @@ function App() {
       }),
     [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch],
   );
+  const filteredBulkPgnGames = useMemo(
+    () => (bulkPgnLibrary ? filterBulkPgnLibraryGames(bulkPgnLibrary.games, bulkPgnFilters) : []),
+    [bulkPgnFilters, bulkPgnLibrary],
+  );
   const bulkPgnLibraryInsights = useMemo(
-    () => (bulkPgnLibrary ? buildBulkPgnLibraryInsights(bulkPgnLibrary.games) : null),
-    [bulkPgnLibrary],
+    () => (bulkPgnLibrary ? buildBulkPgnLibraryInsights(filteredBulkPgnGames) : null),
+    [bulkPgnLibrary, filteredBulkPgnGames],
   );
   const strengthProfile = useMemo(
     () => buildStrengthProfile({ analyses: globalAnalysis, mistakeCards, candidateStats }),
@@ -3513,7 +3658,7 @@ function App() {
       const importedFiles = await Promise.all(
         Array.from(files).map(async (file) => ({ filename: file.name, content: await file.text() })),
       );
-      const library = parseBulkPgnLibrary(importedFiles);
+      const library = parseBulkPgnLibrary(importedFiles, reviewReportHistory);
 
       if (library.games.length === 0) {
         showToast({ type: 'error', text: `导入失败：${library.errors[0]?.message ?? '没有可用棋谱。'}` });
@@ -3523,7 +3668,6 @@ function App() {
       setBulkPgnLibrary(library);
       setMode('pgn');
       updateText(library.games[0].content);
-      setBulkPgnLibrary(library);
       showToast({ type: library.errors.length > 0 ? 'error' : 'success', text: library.summary });
     } catch {
       showToast({ type: 'error', text: '导入失败：无法读取文件。' });
@@ -3536,6 +3680,18 @@ function App() {
     updateText(game.content);
     setBulkPgnLibrary(library);
     showToast({ type: 'success', text: `已载入 ${game.event}` });
+  };
+
+  const updateBulkPgnFilter = <K extends keyof BulkPgnLibraryFilters>(key: K, value: BulkPgnLibraryFilters[K]) => {
+    setBulkPgnFilters((filters) => ({ ...filters, [key]: value }));
+  };
+
+  const toggleBulkPgnImportant = (game: BulkPgnGameSummary) => {
+    setBulkPgnLibrary((library) => (library ? { ...library, games: toggleBulkPgnGameImportant(library.games, game.id) } : library));
+    if (game.historyReportId) {
+      setReviewReportHistory((history) => toggleReviewReportHistoryFavorite(history, game.historyReportId as string));
+    }
+    showToast({ type: 'success', text: game.isImportant ? '已取消重要标记。' : '已标记为重要棋局。' });
   };
 
   const exportCurrentPgn = () => {
@@ -3979,9 +4135,13 @@ function App() {
           {bulkPgnLibrary && (
             <BulkPgnLibraryPanel
               library={bulkPgnLibrary}
+              games={filteredBulkPgnGames}
               insights={bulkPgnLibraryInsights}
+              filters={bulkPgnFilters}
               activeContent={text}
+              onFilterChange={updateBulkPgnFilter}
               onSelectGame={loadBulkPgnGame}
+              onToggleImportant={toggleBulkPgnImportant}
             />
           )}
 
@@ -4099,21 +4259,33 @@ function ImportExportTools({
 
 function BulkPgnLibraryPanel({
   library,
+  games,
   insights,
+  filters,
   activeContent,
+  onFilterChange,
   onSelectGame,
+  onToggleImportant,
 }: {
   library: BulkPgnLibrary;
+  games: BulkPgnGameSummary[];
   insights: BulkPgnLibraryInsights | null;
+  filters: BulkPgnLibraryFilters;
   activeContent: string;
+  onFilterChange: <K extends keyof BulkPgnLibraryFilters>(key: K, value: BulkPgnLibraryFilters[K]) => void;
   onSelectGame: (game: BulkPgnGameSummary) => void;
+  onToggleImportant: (game: BulkPgnGameSummary) => void;
 }) {
+  const handleTextFilter = (key: 'opponent' | 'opening') => (event: ChangeEvent<HTMLInputElement>) => {
+    onFilterChange(key, event.target.value);
+  };
+
   return (
     <section className="bulk-pgn-library" aria-label="批量 PGN 棋谱库">
       <div className="panel-header compact">
         <div>
           <h2>批量 PGN 棋谱库</h2>
-          <p>{library.summary}</p>
+          <p>{library.summary} · 当前显示 {games.length} / {library.games.length} 盘</p>
         </div>
       </div>
       {insights && (
@@ -4129,19 +4301,91 @@ function BulkPgnLibraryPanel({
           )}
         </div>
       )}
+      <div className="bulk-pgn-filters" aria-label="批量 PGN 筛选排序">
+        <label>
+          来源
+          <select value={filters.source ?? 'all'} onChange={(event) => onFilterChange('source', event.target.value as BulkPgnLibraryFilters['source'])}>
+            <option value="all">全部</option>
+            <option value="lichess">Lichess</option>
+            <option value="chess.com">Chess.com</option>
+            <option value="manual">手动/其他</option>
+          </select>
+        </label>
+        <label>
+          结果
+          <select value={filters.result ?? 'all'} onChange={(event) => onFilterChange('result', event.target.value as BulkPgnLibraryFilters['result'])}>
+            <option value="all">全部</option>
+            <option value="win">胜</option>
+            <option value="loss">负</option>
+            <option value="draw">和</option>
+            <option value="ongoing">未结束</option>
+          </select>
+        </label>
+        <label>
+          执棋
+          <select value={filters.color ?? 'all'} onChange={(event) => onFilterChange('color', event.target.value as BulkPgnLibraryFilters['color'])}>
+            <option value="all">全部</option>
+            <option value="white">白方</option>
+            <option value="black">黑方</option>
+          </select>
+        </label>
+        <label>
+          对手
+          <input value={filters.opponent ?? ''} onChange={handleTextFilter('opponent')} placeholder="输入对手名" />
+        </label>
+        <label>
+          开局
+          <input value={filters.opening ?? ''} onChange={handleTextFilter('opening')} placeholder="ECO 或开局名" />
+        </label>
+        <label>
+          起始日期
+          <input type="date" value={filters.dateFrom ?? ''} onChange={(event) => onFilterChange('dateFrom', event.target.value)} />
+        </label>
+        <label>
+          结束日期
+          <input type="date" value={filters.dateTo ?? ''} onChange={(event) => onFilterChange('dateTo', event.target.value)} />
+        </label>
+        <label>
+          排序
+          <select value={filters.sortBy ?? 'date'} onChange={(event) => onFilterChange('sortBy', event.target.value as BulkPgnSortBy)}>
+            <option value="date">日期</option>
+            <option value="opponent">对手</option>
+            <option value="result">结果</option>
+            <option value="opening">开局</option>
+            <option value="source">来源</option>
+            <option value="important">重要</option>
+          </select>
+        </label>
+        <label>
+          方向
+          <select value={filters.sortDirection ?? 'desc'} onChange={(event) => onFilterChange('sortDirection', event.target.value as 'asc' | 'desc')}>
+            <option value="desc">降序</option>
+            <option value="asc">升序</option>
+          </select>
+        </label>
+        <label className="bulk-pgn-checkbox">
+          <input type="checkbox" checked={Boolean(filters.importantOnly)} onChange={(event) => onFilterChange('importantOnly', event.target.checked)} />
+          只看重要
+        </label>
+      </div>
       <div className="bulk-pgn-list">
-        {library.games.map((game) => (
-          <button
-            type="button"
-            key={game.id}
-            className={`bulk-pgn-card ${game.content === activeContent ? 'active' : ''}`}
-            onClick={() => onSelectGame(game)}
-          >
-            <strong>{game.event}</strong>
-            <span>{game.white} vs {game.black}</span>
-            <small>{game.filename} · {game.moveCount} 手 · {game.result}</small>
-          </button>
-        ))}
+        {games.length === 0 ? (
+          <p className="bulk-pgn-empty">没有符合条件的棋局。</p>
+        ) : (
+          games.map((game) => (
+            <article key={game.id} className={`bulk-pgn-card ${game.content === activeContent ? 'active' : ''}`}>
+              <button type="button" className="bulk-pgn-card-main" onClick={() => onSelectGame(game)}>
+                <strong>{game.isImportant ? '★ ' : ''}{game.event}</strong>
+                <span>{game.white} vs {game.black}</span>
+                <small>{game.filename} · {game.moveCount} 手 · {game.result}</small>
+                <small>{game.source} · {game.playedAt || '未知日期'} · {game.openingEco} {game.openingName}</small>
+              </button>
+              <button type="button" className="bulk-pgn-important-toggle" onClick={() => onToggleImportant(game)}>
+                {game.isImportant ? '取消重要' : '标为重要'}
+              </button>
+            </article>
+          ))
+        )}
       </div>
       {library.errors.length > 0 && (
         <details className="bulk-pgn-errors">
@@ -5492,9 +5736,11 @@ export {
   getSpacedReviewIntervalDays,
   identifyOpening,
   normalizeSan,
+  filterBulkPgnLibraryGames,
   parseBulkPgnLibrary,
   parseCandidateMoveEntries,
   scoreToWhiteCentipawns,
+  toggleBulkPgnGameImportant,
   updateMistakeCardReview,
   upsertMistakeCard,
 };

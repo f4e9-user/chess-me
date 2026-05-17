@@ -13,7 +13,9 @@ import {
   toggleReviewReportHistoryFavorite,
   buildStrengthProfile,
   buildBulkPgnLibraryInsights,
+  filterBulkPgnLibraryGames,
   parseBulkPgnLibrary,
+  toggleBulkPgnGameImportant,
   buildEndgameTrainingPlan,
   buildMiddlegamePlanTraining,
   buildGlobalAnalysisCacheKey,
@@ -293,6 +295,79 @@ describe('bulk PGN import helpers', () => {
     expect(insights.openings[0]).toMatchObject({ name: 'Italian Game: Giuoco Piano', games: 1 });
     expect(insights.trainingPriorities[0]).toContain('Italian Game: Giuoco Piano');
     expect(insights.summary).toContain('共 3 盘');
+  });
+
+  it('filters and sorts the imported library by source, time, opponent, result, color, opening, and important flag', () => {
+    const library = parseBulkPgnLibrary([
+      {
+        filename: 'lichess-export.pgn',
+        source: 'lichess',
+        content: `[Event "Rated Blitz game"]\n[Site "https://lichess.org/abc123"]\n[Date "2026.05.10"]\n[White "Me"]\n[Black "Rival"]\n[Result "1-0"]\n\n1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 1-0`,
+      },
+      {
+        filename: 'chesscom-export.pgn',
+        source: 'chess.com',
+        content: `[Event "Live Chess"]\n[Site "https://www.chess.com/game/live/42"]\n[Date "2026.04.01"]\n[White "Opponent"]\n[Black "Me"]\n[Result "0-1"]\n\n1. e4 c5 2. Nf3 d6 0-1`,
+      },
+      {
+        filename: 'manual.pgn',
+        content: `[Event "Club Draw"]\n[Date "2026.05.12"]\n[White "Me"]\n[Black "Clubmate"]\n[Result "1/2-1/2"]\n\n1. d4 d5 2. c4 e6 1/2-1/2`,
+      },
+    ]);
+    const marked = toggleBulkPgnGameImportant(library.games, library.games[1].id);
+
+    const filtered = filterBulkPgnLibraryGames(marked, {
+      source: 'chess.com',
+      dateFrom: '2026-04-01',
+      dateTo: '2026-04-30',
+      opponent: 'oppo',
+      result: 'win',
+      color: 'black',
+      opening: 'sicilian',
+      importantOnly: true,
+      sortBy: 'date',
+      sortDirection: 'desc',
+      playerName: 'Me',
+    });
+
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toMatchObject({
+      source: 'chess.com',
+      site: 'https://www.chess.com/game/live/42',
+      playedAt: '2026-04-01',
+      opponent: 'Opponent',
+      playerColor: 'black',
+      playerResult: 'win',
+      isImportant: true,
+    });
+    expect(filtered[0].openingName).toContain('Sicilian');
+  });
+
+  it('deduplicates repeated imports and preserves important marks from history reports', () => {
+    const source = `[Event "Saved Report"]\n[Site "https://lichess.org/saved"]\n[Date "2026.03.01"]\n[White "Me"]\n[Black "Archive"]\n[Result "1-0"]\n\n1. e4 e5 2. Nf3 Nc6 1-0`;
+    const report = createReviewReportHistoryItem({
+      id: 'hist-1',
+      savedAt: '2026-05-01T00:00:00.000Z',
+      pgn: source,
+      report: {
+        summary: '历史重要报告',
+        biggestMistake: null,
+        sections: { opening: 'Italian Game', middlegame: '', endgame: '', biggestMistake: '' },
+        trainingAdvice: '复盘历史重点局。',
+        markdown: '# 历史重要报告',
+      },
+      analyses: [],
+      meta: { event: 'Saved Report', white: 'Me', black: 'Archive', result: '1-0' },
+    });
+    const favoriteReport = toggleReviewReportHistoryFavorite([report], 'hist-1')[0];
+    const library = parseBulkPgnLibrary([
+      { filename: 'first.pgn', source: 'lichess', content: `${source}\n\n${source}` },
+    ], [favoriteReport]);
+
+    expect(library.games).toHaveLength(1);
+    expect(library.duplicates).toHaveLength(1);
+    expect(library.games[0]).toMatchObject({ isImportant: true, historyReportId: 'hist-1' });
+    expect(library.summary).toContain('去重 1 盘');
   });
 });
 
