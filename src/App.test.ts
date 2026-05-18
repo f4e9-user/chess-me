@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getLayoutRegionClassNames,
   getLayoutRegionProps,
+  getLayoutPanelGroups,
   analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildCandidateMultiPvComparison,
@@ -78,9 +79,85 @@ describe('layout shell helpers', () => {
       resultsArea: { className: 'results-area', 'aria-label': '结果区' },
     });
   });
+  it('groups existing modules into board, input, analysis, review, training, profile, and history/import panels in display order', () => {
+    expect(getLayoutPanelGroups()).toEqual([
+      {
+        id: 'board-focus',
+        className: 'workspace-panel board-focus-panel',
+        title: '棋盘与局面显示',
+        ariaLabel: '棋盘与局面显示',
+        region: 'boardColumn',
+        order: 1,
+        modules: ['board', 'capturedPieces', 'replayControls', 'variationTools', 'notes', 'fen'],
+      },
+      {
+        id: 'history-import',
+        className: 'workspace-panel history-import-panel',
+        title: '历史与导入入口',
+        ariaLabel: '历史与导入入口',
+        region: 'panelColumn',
+        order: 2,
+        modules: ['importExport', 'bulkPgnLibrary'],
+      },
+      {
+        id: 'current-game-input',
+        className: 'workspace-panel current-game-input-panel',
+        title: '当前对局输入',
+        ariaLabel: '当前对局输入',
+        region: 'panelColumn',
+        order: 3,
+        modules: ['pgnFenSwitch', 'gameText', 'moveList'],
+      },
+      {
+        id: 'current-analysis',
+        className: 'workspace-panel current-analysis-panel',
+        title: '当前分析结果',
+        ariaLabel: '当前分析结果',
+        region: 'resultsArea',
+        order: 4,
+        modules: ['evaluationSide', 'stockfish', 'opening', 'globalAnalysis'],
+      },
+      {
+        id: 'review-report',
+        className: 'workspace-panel review-report-panel',
+        title: '复盘报告',
+        ariaLabel: '复盘报告',
+        region: 'resultsArea',
+        order: 5,
+        modules: ['reviewReport'],
+      },
+      {
+        id: 'training-plan',
+        className: 'workspace-panel training-plan-panel',
+        title: '训练建议',
+        ariaLabel: '训练建议',
+        region: 'resultsArea',
+        order: 6,
+        modules: ['guessTraining', 'mistakeBook', 'middlegamePlan', 'endgameTraining'],
+      },
+      {
+        id: 'strength-profile',
+        className: 'workspace-panel strength-profile-panel',
+        title: '棋力画像',
+        ariaLabel: '棋力画像',
+        region: 'resultsArea',
+        order: 7,
+        modules: ['strengthProfile'],
+      },
+      {
+        id: 'review-history',
+        className: 'workspace-panel review-history-panel',
+        title: '历史复盘',
+        ariaLabel: '历史复盘',
+        region: 'resultsArea',
+        order: 8,
+        modules: ['reviewReportHistory'],
+      },
+    ]);
+  });
 });
 
-describe('evaluation side shared helpers', () => {
+describe('evaluation side analysis helpers', () => {
   const analyses = [
     {
       moveIndex: 1,
