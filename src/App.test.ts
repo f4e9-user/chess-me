@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  getLayoutRegionClassNames,
+  getLayoutRegionProps,
   analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildCandidateMultiPvComparison,
@@ -55,6 +57,28 @@ import {
   updateMistakeCardReview,
   upsertMistakeCard,
 } from './App';
+
+describe('layout shell helpers', () => {
+  it('declares stable semantic regions for the app shell, main workspace, board column, panel column, and results area', () => {
+    expect(getLayoutRegionClassNames()).toEqual({
+      appShell: 'app-shell',
+      mainWorkspace: 'main-workspace',
+      boardColumn: 'board-column',
+      panelColumn: 'panel-column',
+      resultsArea: 'results-area',
+    });
+  });
+
+  it('provides accessible props for the main workspace structure', () => {
+    expect(getLayoutRegionProps()).toEqual({
+      appShell: { className: 'app-shell', 'aria-label': 'Chess Me 应用外壳' },
+      mainWorkspace: { className: 'main-workspace', 'aria-label': '国际象棋复盘主工作区' },
+      boardColumn: { className: 'board-column', 'aria-label': '棋盘区' },
+      panelColumn: { className: 'panel-column', 'aria-label': '功能区' },
+      resultsArea: { className: 'results-area', 'aria-label': '结果区' },
+    });
+  });
+});
 
 describe('evaluation side shared helpers', () => {
   const analyses = [
