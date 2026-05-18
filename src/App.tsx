@@ -264,6 +264,7 @@ type MistakeCard = {
 };
 
 type AnalysisDepthPreset = 'fast' | 'standard' | 'deep';
+type EvaluationSide = 'white' | 'black' | 'both';
 type GlobalAnalysisMomentFilter = 'all' | 'key' | 'white' | 'black' | 'key-white' | 'key-black';
 
 type AnalysisDepthPresetConfig = {
@@ -1083,6 +1084,39 @@ function getColorLabel(color: Color) {
   return color === 'w' ? '白方' : '黑方';
 }
 
+function evaluationSideToColor(side: EvaluationSide): Color | undefined {
+  if (side === 'white') {
+    return 'w';
+  }
+
+  if (side === 'black') {
+    return 'b';
+  }
+
+  return undefined;
+}
+
+function getEvaluationSideLabel(side: EvaluationSide) {
+  const color = evaluationSideToColor(side);
+  return color ? getColorLabel(color) : '双方';
+}
+
+function filterAnalysesByEvaluationSide<T extends Pick<GlobalMoveAnalysis, 'moveColor' | 'label'>>(
+  analyses: T[],
+  side: EvaluationSide,
+) {
+  const color = evaluationSideToColor(side);
+  if (!color) {
+    return analyses;
+  }
+
+  return analyses.filter((item) => inferMoveColorFromAnalysis(item) === color);
+}
+
+function filterKeyAnalysesByEvaluationSide<T extends GlobalMoveAnalysis>(analyses: T[], side: EvaluationSide) {
+  return filterAnalysesByEvaluationSide(analyses, side).filter((item) => classifyKeyAnalysisMoment(item).isKeyMoment);
+}
+
 function buildGlobalAnalysisPerspectiveLabel({
   moveColor,
   perspective,
@@ -1202,7 +1236,9 @@ function buildKeyMomentSummary(analyses: GlobalMoveAnalysis[]) {
 }
 
 function filterGlobalAnalysisMoments(analyses: GlobalMoveAnalysis[], filter: GlobalAnalysisMomentFilter) {
-  const colorFilter: Color | null = filter.includes('white') ? 'w' : filter.includes('black') ? 'b' : null;
+  const colorFilter = evaluationSideToColor(
+    filter.includes('white') ? 'white' : filter.includes('black') ? 'black' : 'both',
+  );
   const keyOnly = filter === 'key' || filter.startsWith('key-');
 
   return analyses.filter((item) => {
@@ -3292,6 +3328,7 @@ function App() {
   const [positionIndex, setPositionIndex] = useState(0);
   const [isBoardFlipped, setIsBoardFlipped] = useState(false);
   const [evaluationPerspective, setEvaluationPerspective] = useState<EvaluationPerspective>('white');
+  const [evaluationSide, setEvaluationSide] = useState<EvaluationSide>('white');
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
   const [variationPositions, setVariationPositions] = useState<VariationPosition[]>([]);
   const [variationIndex, setVariationIndex] = useState(-1);
@@ -4506,6 +4543,8 @@ function App() {
             onDelete={deleteSavedVariation}
           />
 
+          <EvaluationSidePanel side={evaluationSide} onSideChange={setEvaluationSide} />
+
           <StockfishPanel
             status={engineStatus}
             analysis={analysis}
@@ -4997,6 +5036,37 @@ function PromotionDialog({
         </button>
       </div>
     </div>
+  );
+}
+
+function EvaluationSidePanel({
+  side,
+  onSideChange,
+}: {
+  side: EvaluationSide;
+  onSideChange: (side: EvaluationSide) => void;
+}) {
+  const options: EvaluationSide[] = ['white', 'black', 'both'];
+
+  return (
+    <section className="evaluation-side-panel" aria-label="全局评价方">
+      <div className="section-heading">
+        <span>全局评价方</span>
+        <small>所有分析、报告、训练模块统一使用的被评价方上下文</small>
+      </div>
+      <div className="segmented-control">
+        {options.map((option) => (
+          <button
+            type="button"
+            key={option}
+            className={side === option ? 'active' : ''}
+            onClick={() => onSideChange(option)}
+          >
+            {getEvaluationSideLabel(option)}
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -6259,6 +6329,10 @@ export {
   buildGlobalAnalysisPartialReport,
   buildGlobalAnalysisReport,
   buildGlobalAnalysisPerspectiveLabel,
+  evaluationSideToColor,
+  filterAnalysesByEvaluationSide,
+  filterKeyAnalysesByEvaluationSide,
+  getEvaluationSideLabel,
   buildKeyMomentSummary,
   buildMiddlegamePlanTraining,
   classifyKeyAnalysisMoment,

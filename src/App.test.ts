@@ -28,6 +28,10 @@ import {
   buildGlobalAnalysisPlayerSummary,
   buildGlobalAnalysisReport,
   buildGlobalAnalysisPerspectiveLabel,
+  evaluationSideToColor,
+  filterAnalysesByEvaluationSide,
+  filterKeyAnalysesByEvaluationSide,
+  getEvaluationSideLabel,
   buildKeyMomentSummary,
   classifyKeyAnalysisMoment,
   formatMultiPvDisplayLines,
@@ -47,6 +51,84 @@ import {
   updateMistakeCardReview,
   upsertMistakeCard,
 } from './App';
+
+describe('evaluation side shared helpers', () => {
+  const analyses = [
+    {
+      moveIndex: 1,
+      label: '1. e4',
+      san: 'e4',
+      moveColor: 'w' as const,
+      quality: '好棋' as const,
+      centipawnLoss: 0,
+      beforeScore: 20,
+      afterScore: 25,
+      isSwingPoint: false,
+      bestMoveSan: 'e4',
+      multiPvLines: [],
+    },
+    {
+      moveIndex: 2,
+      label: '1... c5',
+      san: 'c5',
+      moveColor: 'b' as const,
+      quality: '败着' as const,
+      centipawnLoss: 360,
+      beforeScore: 25,
+      afterScore: 385,
+      isSwingPoint: true,
+      bestMoveSan: 'e5',
+      multiPvLines: [],
+    },
+    {
+      moveIndex: 3,
+      label: '2. Nf3',
+      san: 'Nf3',
+      moveColor: 'w' as const,
+      quality: '失误' as const,
+      centipawnLoss: 140,
+      beforeScore: 385,
+      afterScore: 245,
+      isSwingPoint: true,
+      bestMoveSan: 'd4',
+      multiPvLines: [],
+    },
+    {
+      moveIndex: 4,
+      label: '2... d6',
+      san: 'd6',
+      moveColor: 'b' as const,
+      quality: '好棋' as const,
+      centipawnLoss: 0,
+      beforeScore: 245,
+      afterScore: 240,
+      isSwingPoint: false,
+      bestMoveSan: 'd6',
+      multiPvLines: [],
+    },
+  ];
+
+  it('maps evaluation side to chess colors and user-facing labels', () => {
+    expect(evaluationSideToColor('white')).toBe('w');
+    expect(evaluationSideToColor('black')).toBe('b');
+    expect(evaluationSideToColor('both')).toBeUndefined();
+    expect(getEvaluationSideLabel('white')).toBe('白方');
+    expect(getEvaluationSideLabel('black')).toBe('黑方');
+    expect(getEvaluationSideLabel('both')).toBe('双方');
+  });
+
+  it('filters analyses to white moves, black moves, or both sides', () => {
+    expect(filterAnalysesByEvaluationSide(analyses, 'white').map((item) => item.san)).toEqual(['e4', 'Nf3']);
+    expect(filterAnalysesByEvaluationSide(analyses, 'black').map((item) => item.san)).toEqual(['c5', 'd6']);
+    expect(filterAnalysesByEvaluationSide(analyses, 'both').map((item) => item.san)).toEqual(['e4', 'c5', 'Nf3', 'd6']);
+  });
+
+  it('filters key analyses by evaluated side without attributing opponent mistakes', () => {
+    expect(filterKeyAnalysesByEvaluationSide(analyses, 'white').map((item) => item.san)).toEqual(['Nf3']);
+    expect(filterKeyAnalysesByEvaluationSide(analyses, 'black').map((item) => item.san)).toEqual(['c5']);
+    expect(filterKeyAnalysesByEvaluationSide(analyses, 'both').map((item) => item.san)).toEqual(['c5', 'Nf3']);
+  });
+});
 
 describe('guess next move training helpers', () => {
   it('advances from the player guess to the opponent pgn reply in one training turn', () => {
