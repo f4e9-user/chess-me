@@ -1735,8 +1735,12 @@ function classifyMiddlegameTheme(analysis: GlobalMoveAnalysis) {
   return '候选着法与风险控制';
 }
 
-function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): MiddlegamePlanTraining {
-  const middlegameAnalyses = analyses.filter((item) => item.moveIndex >= 8 && item.moveIndex <= 40);
+function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[], evaluationSide: EvaluationSide = 'both'): MiddlegamePlanTraining {
+  const evaluatedSideLabel = getEvaluationSideLabel(evaluationSide);
+  const middlegameAnalyses = filterAnalysesByEvaluationSide(
+    analyses.filter((item) => item.moveIndex >= 8 && item.moveIndex <= 40),
+    evaluationSide,
+  );
   const riskyMoves = middlegameAnalyses
     .filter((item) => item.isSwingPoint || item.quality === '失误' || item.quality === '败着')
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
@@ -1771,8 +1775,8 @@ function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): Middlegame
 
   const themeStats = [...themeMap.values()].sort((a, b) => b.totalLoss - a.totalLoss || b.count - a.count);
   const summary = focusCards.length
-    ? `发现 ${focusCards.length} 个关键中局计划点，优先训练：${focusCards[0].topic}。`
-    : '暂未发现明显中局计划训练点；建议先运行整盘分析。';
+    ? `被评价方：${evaluatedSideLabel}。发现 ${focusCards.length} 个关键中局计划点，优先训练：${focusCards[0].topic}。`
+    : `被评价方：${evaluatedSideLabel}。暂未发现明显中局计划训练点；建议先运行整盘分析。`;
 
   return { focusCards, themeStats, summary };
 }
@@ -2281,15 +2285,18 @@ function buildReviewReport({
   middlegamePlan,
   endgamePlan,
   evaluatedColor,
+  evaluationSide,
 }: {
   opening: OpeningMatch;
   analyses: GlobalMoveAnalysis[];
   middlegamePlan: MiddlegamePlanTraining;
   endgamePlan: EndgameTrainingPlan;
   evaluatedColor?: Color;
+  evaluationSide?: EvaluationSide;
 }): ReviewReport {
-  const reportAnalyses = evaluatedColor ? analyses.filter((analysis) => inferMoveColorFromAnalysis(analysis) === evaluatedColor) : analyses;
-  const evaluatedSideLabel = evaluatedColor ? getColorLabel(evaluatedColor) : '双方';
+  const reportEvaluationSide: EvaluationSide = evaluationSide ?? (evaluatedColor === 'w' ? 'white' : evaluatedColor === 'b' ? 'black' : 'both');
+  const reportAnalyses = filterAnalysesByEvaluationSide(analyses, reportEvaluationSide);
+  const evaluatedSideLabel = getEvaluationSideLabel(reportEvaluationSide);
   const riskyMoves = filterGlobalAnalysisMoments(reportAnalyses, 'key')
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
   const biggestMistake = riskyMoves[0] ?? null;
@@ -2304,7 +2311,9 @@ function buildReviewReport({
     endgamePlan.phase === 'endgame'
       ? `${endgamePlan.summary} 主题：${endgamePlan.themes.join('、') || '基础残局转换'}。`
       : '本局尚未识别到明确残局阶段。';
-  const biggestMistakePerspective = biggestMistake ? describeGlobalAnalysisPerspective(biggestMistake, evaluatedColor ? 'white' : 'sideToMove') : null;
+  const biggestMistakePerspective = biggestMistake
+    ? describeGlobalAnalysisPerspective(biggestMistake, reportEvaluationSide === 'both' ? 'sideToMove' : 'white')
+    : null;
   const biggestMistakeSection = biggestMistake
     ? `被评价方：${evaluatedSideLabel}。最大失误：${biggestMistake.label} ${biggestMistake.san}，${biggestMistakePerspective?.summary}；建议比较引擎首选 ${biggestMistake.bestMoveSan || '-'}。`
     : `被评价方：${evaluatedSideLabel}。最大失误：暂未发现明显失误。`;
@@ -3351,6 +3360,8 @@ function App() {
   const [isBoardFlipped, setIsBoardFlipped] = useState(false);
   const [evaluationPerspective, setEvaluationPerspective] = useState<EvaluationPerspective>('white');
   const [evaluationSide, setEvaluationSide] = useState<EvaluationSide>('white');
+  const [reviewReportEvaluationSide, setReviewReportEvaluationSide] = useState<EvaluationSide>(evaluationSide);
+  const [middlegamePlanEvaluationSide, setMiddlegamePlanEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
   const [variationPositions, setVariationPositions] = useState<VariationPosition[]>([]);
   const [variationIndex, setVariationIndex] = useState(-1);
@@ -3448,7 +3459,10 @@ function App() {
     () => buildOpeningImprovementPlan(mode === 'pgn' ? [result.moves.map((move) => move.san)] : []),
     [mode, result.moves],
   );
-  const middlegamePlanTraining = useMemo(() => buildMiddlegamePlanTraining(globalAnalysis), [globalAnalysis]);
+  const middlegamePlanTraining = useMemo(
+    () => buildMiddlegamePlanTraining(globalAnalysis, middlegamePlanEvaluationSide),
+    [globalAnalysis, middlegamePlanEvaluationSide],
+  );
   const endgameTrainingPlan = useMemo(
     () => buildEndgameTrainingPlan({ positions: result.positions, analyses: globalAnalysis }),
     [globalAnalysis, result.positions],
@@ -3460,9 +3474,9 @@ function App() {
         analyses: globalAnalysis,
         middlegamePlan: middlegamePlanTraining,
         endgamePlan: endgameTrainingPlan,
-        evaluatedColor: evaluationPerspective === 'white' ? 'w' : evaluationPerspective === 'board' ? (isBoardFlipped ? 'b' : 'w') : undefined,
+        evaluationSide: reviewReportEvaluationSide,
       }),
-    [endgameTrainingPlan, evaluationPerspective, globalAnalysis, isBoardFlipped, middlegamePlanTraining, openingMatch],
+    [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch, reviewReportEvaluationSide],
   );
   const naturalLanguageCoach = useMemo(
     () => buildNaturalLanguageCoachReport({
@@ -4586,13 +4600,20 @@ function App() {
 
           <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
 
-          <MiddlegamePlanPanel plan={middlegamePlanTraining} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+          <MiddlegamePlanPanel
+            plan={middlegamePlanTraining}
+            evaluationSide={middlegamePlanEvaluationSide}
+            onEvaluationSideChange={setMiddlegamePlanEvaluationSide}
+            onSelectMove={(index) => updatePositionIndex(index + 1)}
+          />
 
           <EndgameTrainingPanel plan={endgameTrainingPlan} onSelectMove={(index) => updatePositionIndex(index + 1)} />
 
           <ReviewReportPanel
             report={reviewReport}
             naturalLanguageCoach={naturalLanguageCoach}
+            evaluationSide={reviewReportEvaluationSide}
+            onEvaluationSideChange={setReviewReportEvaluationSide}
             onCopy={copyReviewReport}
             onCopyCoach={copyNaturalLanguageCoachReport}
             onExport={exportReviewReport}
@@ -5663,11 +5684,44 @@ function GlobalAnalysisPanel({
   );
 }
 
+function EvaluationSideSwitch({
+  label,
+  side,
+  onChange,
+}: {
+  label: string;
+  side: EvaluationSide;
+  onChange: (side: EvaluationSide) => void;
+}) {
+  const options: EvaluationSide[] = ['white', 'black', 'both'];
+
+  return (
+    <div className="evaluation-side-switch" role="group" aria-label={label}>
+      <span>{label}</span>
+      {options.map((option) => (
+        <button
+          type="button"
+          key={option}
+          className={side === option ? 'active' : ''}
+          aria-pressed={side === option}
+          onClick={() => onChange(option)}
+        >
+          {getEvaluationSideLabel(option)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MiddlegamePlanPanel({
   plan,
+  evaluationSide,
+  onEvaluationSideChange,
   onSelectMove,
 }: {
   plan: MiddlegamePlanTraining;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
   onSelectMove: (moveIndex: number) => void;
 }) {
   return (
@@ -5676,6 +5730,7 @@ function MiddlegamePlanPanel({
         <span>中局计划训练</span>
         <strong>{plan.focusCards.length}</strong>
       </div>
+      <EvaluationSideSwitch label="中局训练评价方" side={evaluationSide} onChange={onEvaluationSideChange} />
       <p>{plan.summary}</p>
 
       {plan.themeStats.length > 0 && (
@@ -5849,6 +5904,8 @@ function StrengthProfilePanel({
 function ReviewReportPanel({
   report,
   naturalLanguageCoach,
+  evaluationSide,
+  onEvaluationSideChange,
   onCopy,
   onCopyCoach,
   onExport,
@@ -5857,6 +5914,8 @@ function ReviewReportPanel({
 }: {
   report: ReviewReport;
   naturalLanguageCoach: NaturalLanguageCoachReport;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
   onCopy: () => void;
   onCopyCoach: () => void;
   onExport: () => void;
@@ -5871,6 +5930,7 @@ function ReviewReportPanel({
           <p>{report.summary}</p>
         </div>
         <div className="review-report-actions">
+          <EvaluationSideSwitch label="复盘报告评价方" side={evaluationSide} onChange={onEvaluationSideChange} />
           <button type="button" onClick={onSave}>
             保存到历史
           </button>

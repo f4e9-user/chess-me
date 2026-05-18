@@ -768,6 +768,50 @@ describe('endgame training helpers', () => {
   });
 });
 describe('middlegame plan training helpers', () => {
+  it('filters review report and middlegame training cards by explicit evaluation side', () => {
+    const analyses = [
+      { moveIndex: 10, label: '6. Bc4', san: 'Bc4', moveColor: 'w' as const, quality: '失误' as const, centipawnLoss: 160, beforeScore: 40, afterScore: -120, isSwingPoint: true, bestMoveSan: 'Be2', multiPvLines: [] },
+      { moveIndex: 11, label: '6... Qh4', san: 'Qh4', moveColor: 'b' as const, quality: '败着' as const, centipawnLoss: 420, beforeScore: -120, afterScore: 300, isSwingPoint: true, bestMoveSan: 'Nf6', multiPvLines: [] },
+      { moveIndex: 12, label: '7. Nf3', san: 'Nf3', moveColor: 'w' as const, quality: '疑问手' as const, centipawnLoss: 70, beforeScore: 300, afterScore: 230, isSwingPoint: false, bestMoveSan: 'Qe2', multiPvLines: [] },
+    ];
+    const commonPlans = {
+      opening: { eco: 'C20', name: 'King Pawn', status: 'recognized' as const, matchedPly: 4 },
+      endgamePlan: { phase: 'not-endgame' as const, type: '非残局' as const, cards: [], themes: [], summary: '非残局。' },
+    };
+
+    const whiteMiddlegamePlan = buildMiddlegamePlanTraining(analyses, 'white');
+    expect(whiteMiddlegamePlan.focusCards.map((card) => card.label)).toEqual(['6. Bc4']);
+    expect(whiteMiddlegamePlan.summary).toContain('被评价方：白方');
+    expect(whiteMiddlegamePlan.summary).not.toContain('6... Qh4');
+
+    const blackMiddlegamePlan = buildMiddlegamePlanTraining(analyses, 'black');
+    expect(blackMiddlegamePlan.focusCards.map((card) => card.label)).toEqual(['6... Qh4']);
+    expect(blackMiddlegamePlan.summary).toContain('被评价方：黑方');
+    expect(blackMiddlegamePlan.summary).not.toContain('6. Bc4');
+
+    const whiteReport = buildReviewReport({
+      ...commonPlans,
+      analyses,
+      middlegamePlan: whiteMiddlegamePlan,
+      evaluationSide: 'white',
+    });
+    expect(whiteReport.biggestMistake?.label).toBe('6. Bc4');
+    expect(whiteReport.summary).toContain('被评价方：白方');
+    expect(whiteReport.summary).not.toContain('6... Qh4');
+    expect(whiteReport.sections.middlegame).not.toContain('6... Qh4');
+
+    const blackReport = buildReviewReport({
+      ...commonPlans,
+      analyses,
+      middlegamePlan: blackMiddlegamePlan,
+      evaluationSide: 'black',
+    });
+    expect(blackReport.biggestMistake?.label).toBe('6... Qh4');
+    expect(blackReport.summary).toContain('被评价方：黑方');
+    expect(blackReport.summary).not.toContain('6. Bc4');
+    expect(blackReport.sections.middlegame).not.toContain('6. Bc4');
+  });
+
   it('builds a middlegame plan from swing points and recurring move-quality themes', () => {
     const plan = buildMiddlegamePlanTraining([
       {
