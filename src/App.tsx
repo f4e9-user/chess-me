@@ -164,6 +164,13 @@ type KeyAnalysisMomentClassification = {
   reasons: string[];
 };
 
+type GlobalAnalysisPerspectiveLabel = {
+  perspectiveLabel: string;
+  evaluatedSideLabel: string;
+  moverLabel: string;
+  summary: string;
+};
+
 type GuessMoveResult = {
   guessedSan: string;
   actualSan: string;
@@ -276,6 +283,7 @@ type GlobalMoveAnalysis = {
   moveIndex: number;
   label: string;
   san: string;
+  moveColor?: Color;
   quality: MoveQualityLabel;
   centipawnLoss: number;
   beforeScore: number | null;
@@ -1035,6 +1043,7 @@ function buildGlobalAnalysisReport({
       moveIndex: index,
       label: formatMoveLabel(move as Move, index),
       san: move.san,
+      moveColor: move.color,
       quality: classifyMoveFromEvaluationDrop(centipawnLoss),
       centipawnLoss,
       beforeScore,
@@ -1062,6 +1071,63 @@ function buildGlobalAnalysisPartialReport(input: {
   return buildGlobalAnalysisReport({
     ...input,
     moves,
+  });
+}
+
+function getColorLabel(color: Color) {
+  return color === 'w' ? '白方' : '黑方';
+}
+
+function buildGlobalAnalysisPerspectiveLabel({
+  moveColor,
+  perspective,
+  boardFlipped = false,
+  classification,
+  centipawnLoss,
+}: {
+  moveColor: Color;
+  perspective: EvaluationPerspective;
+  boardFlipped?: boolean;
+  classification: MoveQualityLabel;
+  centipawnLoss: number;
+}): GlobalAnalysisPerspectiveLabel {
+  const moverLabel = getColorLabel(moveColor);
+  const perspectiveLabel = perspective === 'white'
+    ? '白方视角'
+    : perspective === 'sideToMove'
+      ? '本步走棋方视角'
+      : `棋盘视角（${boardFlipped ? '黑方' : '白方'}在下）`;
+  const evaluatedSideLabel = perspective === 'white'
+    ? '白方'
+    : `本步走棋方（${moverLabel}）`;
+
+  return {
+    perspectiveLabel,
+    evaluatedSideLabel,
+    moverLabel,
+    summary: `${perspectiveLabel} · 评价方：${evaluatedSideLabel} · 走棋方：${moverLabel} · ${classification}，损失 ${centipawnLoss} cp`,
+  };
+}
+
+function inferMoveColorFromAnalysis(analysis: Pick<GlobalMoveAnalysis, 'moveColor' | 'label'>): Color {
+  if (analysis.moveColor) {
+    return analysis.moveColor;
+  }
+
+  return analysis.label.includes('...') ? 'b' : 'w';
+}
+
+function describeGlobalAnalysisPerspective(
+  analysis: Pick<GlobalMoveAnalysis, 'moveColor' | 'label' | 'quality' | 'centipawnLoss'>,
+  perspective: EvaluationPerspective = 'sideToMove',
+  boardFlipped = false,
+) {
+  return buildGlobalAnalysisPerspectiveLabel({
+    moveColor: inferMoveColorFromAnalysis(analysis),
+    perspective,
+    boardFlipped,
+    classification: analysis.quality,
+    centipawnLoss: analysis.centipawnLoss,
   });
 }
 
@@ -1593,6 +1659,7 @@ function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): Middlegame
   const focusCards = riskyMoves.slice(0, 4).map((item) => {
     const theme = classifyMiddlegameTheme(item);
     const priority = item.quality === '败着' ? 100 : item.quality === '失误' ? 80 : 60;
+    const perspective = describeGlobalAnalysisPerspective(item);
     return {
       id: `middlegame-${item.moveIndex}-${normalizeSan(item.san)}`,
       moveIndex: item.moveIndex,
@@ -1600,8 +1667,8 @@ function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): Middlegame
       san: item.san,
       topic: item.centipawnLoss >= 300 ? '候选着法与风险控制' : theme,
       priority,
-      recommendedPlan: `复盘 ${item.label} 前的候选计划；优先比较实战 ${item.san} 与引擎首选 ${item.bestMoveSan || '暂未分析'} 的战略目标。`,
-      reason: `该手损失 ${item.centipawnLoss} cp${item.isSwingPoint ? '，并触发局势突变' : ''}。`,
+      recommendedPlan: `复盘 ${item.label} 前的候选计划；${perspective.summary}；优先比较实战 ${item.san} 与引擎首选 ${item.bestMoveSan || '暂未分析'} 的战略目标。`,
+      reason: `${perspective.evaluatedSideLabel}该手损失 ${item.centipawnLoss} cp${item.isSwingPoint ? '，并触发局势突变' : ''}。`,
       tags: ['中局', item.quality],
     } satisfies MiddlegamePlanCard;
   });
@@ -1708,17 +1775,20 @@ function buildEndgameTrainingPlan({
     .filter((analysis) => analysis.centipawnLoss >= 80 || analysis.isSwingPoint)
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
     .slice(0, 5)
-    .map((analysis) => ({
-      id: `endgame-${analysis.moveIndex}-${normalizeSan(analysis.san)}`,
-      moveIndex: analysis.moveIndex,
-      label: analysis.label,
-      san: analysis.san,
-      endgameType: type,
-      missedChance: classifyEndgameMissedChance(analysis),
-      recommendedMove: analysis.bestMoveSan,
-      prompt: `复盘 ${analysis.label}：实战 ${analysis.san}，优先找 ${analysis.bestMoveSan || '更稳妥的残局计划'}。`,
-      tags: ['残局', type],
-    }));
+    .map((analysis) => {
+      const perspective = describeGlobalAnalysisPerspective(analysis);
+      return {
+        id: `endgame-${analysis.moveIndex}-${normalizeSan(analysis.san)}`,
+        moveIndex: analysis.moveIndex,
+        label: analysis.label,
+        san: analysis.san,
+        endgameType: type,
+        missedChance: classifyEndgameMissedChance(analysis),
+        recommendedMove: analysis.bestMoveSan,
+        prompt: `复盘 ${analysis.label}：${perspective.summary}；实战 ${analysis.san}，优先找 ${analysis.bestMoveSan || '更妥的残局计划'}。`,
+        tags: ['残局', type],
+      };
+    });
 
   const themes = [
     cards.some((card) => /^K|K/.test(card.san) || /^K|K/.test(card.recommendedMove)) ? '王的积极性' : '',
@@ -2020,6 +2090,7 @@ function buildNaturalLanguagePositionExplanation({
   candidateComparison?: CandidateMultiPvComparison | null;
 }): NaturalLanguagePositionExplanation {
   const classification = classifyKeyAnalysisMoment(analysis);
+  const perspective = describeGlobalAnalysisPerspective(analysis);
   const recommendedCandidateMoves = rankMultiPvLines(analysis.multiPvLines)
     .map((line) => line.firstMoveSan || line.pv[0] || '')
     .filter(Boolean)
@@ -2028,8 +2099,8 @@ function buildNaturalLanguagePositionExplanation({
   const practiceThemes = [...new Set([theme, analysis.centipawnLoss >= 300 ? '候选着法与风险控制' : '', ...extractPracticeThemesFromText(reviewReport?.trainingAdvice)].filter(Boolean))];
   const bestMove = recommendedCandidateMoves[0] || analysis.bestMoveSan || '-';
   const whyBad = analysis.quality === '好棋'
-    ? `这步损失 ${analysis.centipawnLoss} cp，仍可作为稳定选择复盘。`
-    : `这步被标记为${analysis.quality}，损失 ${analysis.centipawnLoss} cp；引擎首选是 ${analysis.bestMoveSan || bestMove}。`;
+    ? `${perspective.summary}；仍可作为稳定选择复盘。`
+    : `${perspective.summary}；引擎首选是 ${analysis.bestMoveSan || bestMove}。`;
   const strategicImpact = [
     analysis.isSwingPoint ? '它触发局势突变，说明走子前需要先检查对方强制回应。' : '它没有触发大幅局势突变，但仍暴露了计划选择问题。',
     classification.reasons.length ? `复盘标签：${classification.reasons.join('、')}。` : '',
@@ -2128,7 +2199,7 @@ function buildReviewReport({
       ? `${endgamePlan.summary} 主题：${endgamePlan.themes.join('、') || '基础残局转换'}。`
       : '本局尚未识别到明确残局阶段。';
   const biggestMistakeSection = biggestMistake
-    ? `最大失误：${biggestMistake.label} ${biggestMistake.san}，损失 ${biggestMistake.centipawnLoss} cp；建议比较引擎首选 ${biggestMistake.bestMoveSan || '-'}。`
+    ? `最大失误：${biggestMistake.label} ${biggestMistake.san}，${describeGlobalAnalysisPerspective(biggestMistake).summary}；建议比较引擎首选 ${biggestMistake.bestMoveSan || '-'}。`
     : '最大失误：暂未发现明显失误。';
   const topTheme = middlegamePlan.themeStats[0]?.theme ?? endgamePlan.themes[0] ?? '候选着法复盘';
   const trainingAdvice = biggestMistake
@@ -5366,7 +5437,7 @@ function GlobalAnalysisPanel({
             >
               <span className="analysis-label">{item.label}</span>
               <span className="analysis-quality">{item.quality}</span>
-              <span className="analysis-loss">损失 {item.centipawnLoss} cp</span>
+              <span className="analysis-loss">{describeGlobalAnalysisPerspective(item).summary}</span>
               <span className="analysis-best">首选 {item.bestMoveSan || '-'}</span>
               <span className="analysis-multipv">
                 {formatMultiPvDisplayLines({
@@ -6076,6 +6147,7 @@ export {
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisPartialReport,
   buildGlobalAnalysisReport,
+  buildGlobalAnalysisPerspectiveLabel,
   buildKeyMomentSummary,
   buildMiddlegamePlanTraining,
   classifyKeyAnalysisMoment,

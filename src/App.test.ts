@@ -26,6 +26,7 @@ import {
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisPartialReport,
   buildGlobalAnalysisReport,
+  buildGlobalAnalysisPerspectiveLabel,
   buildKeyMomentSummary,
   classifyKeyAnalysisMoment,
   formatMultiPvDisplayLines,
@@ -832,6 +833,48 @@ describe('analysis controls, cache, and key moment helpers', () => {
     expect(summary).toContain('关键时刻 3 个');
     expect(summary).toContain('败着 1 个');
     expect(summary).toContain('高训练价值 2 个');
+  });
+
+  it('labels analysis perspective, evaluated side, mover, and no-user-context fallback for global rows', () => {
+    const whiteGood = buildGlobalAnalysisPerspectiveLabel({
+      moveColor: 'w',
+      perspective: 'white',
+      classification: '好棋',
+      centipawnLoss: 20,
+    });
+    const blackMistake = buildGlobalAnalysisPerspectiveLabel({
+      moveColor: 'b',
+      perspective: 'sideToMove',
+      classification: '失误',
+      centipawnLoss: 180,
+    });
+    const boardPerspective = buildGlobalAnalysisPerspectiveLabel({
+      moveColor: 'b',
+      perspective: 'board',
+      boardFlipped: true,
+      classification: '败着',
+      centipawnLoss: 360,
+    });
+
+    expect(whiteGood).toMatchObject({
+      perspectiveLabel: '白方视角',
+      evaluatedSideLabel: '白方',
+      moverLabel: '白方',
+      summary: '白方视角 · 评价方：白方 · 走棋方：白方 · 好棋，损失 20 cp',
+    });
+    expect(blackMistake).toMatchObject({
+      perspectiveLabel: '本步走棋方视角',
+      evaluatedSideLabel: '本步走棋方（黑方）',
+      moverLabel: '黑方',
+      summary: '本步走棋方视角 · 评价方：本步走棋方（黑方） · 走棋方：黑方 · 失误，损失 180 cp',
+    });
+    expect(boardPerspective).toMatchObject({
+      perspectiveLabel: '棋盘视角（黑方在下）',
+      evaluatedSideLabel: '本步走棋方（黑方）',
+      moverLabel: '黑方',
+    });
+    expect(boardPerspective.summary).not.toContain('我方');
+    expect(boardPerspective.summary).not.toContain('用户');
   });
 
   it('builds report rows with multipv lines and filters key training moments', () => {
