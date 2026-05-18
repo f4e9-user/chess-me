@@ -55,6 +55,7 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(360px, 1fr) minmax(320px, 420px);
   gap: 24px;
+  align-items: start;
   max-width: 1280px;
   margin: 0 auto;
 }
@@ -65,8 +66,22 @@ button:disabled {
   min-width: 0;
 }
 
+.board-column,
+.panel-column {
+  display: grid;
+  gap: 16px;
+}
+
 .results-area {
+  display: grid;
   grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.results-area > * {
+  min-width: 0;
 }
 
 .top-bar {
