@@ -1,6 +1,30 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { Chess, type Color, type Move, type PieceSymbol, type Square } from 'chess.js';
 
+const layoutRegionClassNames = {
+  appShell: 'app-shell',
+  mainWorkspace: 'main-workspace',
+  boardColumn: 'board-column',
+  panelColumn: 'panel-column',
+  resultsArea: 'results-area',
+} as const;
+
+const layoutRegionProps = {
+  appShell: { className: layoutRegionClassNames.appShell, 'aria-label': 'Chess Me 应用外壳' },
+  mainWorkspace: { className: layoutRegionClassNames.mainWorkspace, 'aria-label': '国际象棋复盘主工作区' },
+  boardColumn: { className: layoutRegionClassNames.boardColumn, 'aria-label': '棋盘区' },
+  panelColumn: { className: layoutRegionClassNames.panelColumn, 'aria-label': '功能区' },
+  resultsArea: { className: layoutRegionClassNames.resultsArea, 'aria-label': '结果区' },
+} as const;
+
+function getLayoutRegionClassNames() {
+  return layoutRegionClassNames;
+}
+
+function getLayoutRegionProps() {
+  return layoutRegionProps;
+}
+
 type ReplayMode = 'pgn' | 'fen';
 
 type ReplayPosition = {
@@ -4628,10 +4652,12 @@ function App() {
     setSelectedSquare(null);
   };
 
+  const regions = getLayoutRegionProps();
+
   return (
-    <main className="app-shell">
-      <section className="workspace" aria-label="国际象棋复盘器">
-        <div className="board-area">
+    <main {...regions.appShell}>
+      <section {...regions.mainWorkspace}>
+        <div {...regions.boardColumn}>
           <div className="top-bar">
             <div>
               <p className="eyebrow">Chess Me</p>
@@ -4693,6 +4719,121 @@ function App() {
             </button>
           </div>
 
+          <div className="variation-panel">
+            <div>
+              <span className="variation-label">{isVariationMode ? '变化图' : '原棋谱'}</span>
+              <p>
+                {isVariationMode
+                  ? `已试走 ${variationPositions.length} 手，当前在${
+                      activeVariation?.label ?? '原局面'
+                    }。`
+                  : '点击棋子后选择目标格，可临时试走。'}
+              </p>
+            </div>
+            <button type="button" onClick={restoreOriginalPosition} disabled={!isVariationMode}>
+              恢复原局面
+            </button>
+            <button type="button" onClick={undoVariationMove} disabled={!isVariationMode}>
+              悔一步
+            </button>
+            <button type="button" onClick={saveCurrentVariation} disabled={!isVariationMode}>
+              保存变化
+            </button>
+          </div>
+
+          <SavedVariationsPanel
+            variations={savedVariations}
+            onDelete={deleteSavedVariation}
+          />
+
+          {current && (
+            <TrainingNotes
+              pgnComment={current.comment}
+              note={currentNote}
+              onNoteChange={updateCurrentNote}
+            />
+          )}
+
+          <div className="fen-display">
+            <span>FEN</span>
+            <code>{activeFen}</code>
+          </div>
+        </div>
+
+        <aside {...regions.panelColumn}>
+          <ImportExportTools
+            canExportPgn={mode === 'pgn' && !result.error}
+            onImportPgn={importPgnFile}
+            onExportPgn={exportCurrentPgn}
+            onCopyFen={copyCurrentFen}
+          />
+
+          {bulkPgnLibrary && (
+            <BulkPgnLibraryPanel
+              library={bulkPgnLibrary}
+              games={filteredBulkPgnGames}
+              insights={bulkPgnLibraryInsights}
+              filters={bulkPgnFilters}
+              activeContent={text}
+              onFilterChange={updateBulkPgnFilter}
+              onSelectGame={loadBulkPgnGame}
+              onToggleImportant={toggleBulkPgnImportant}
+            />
+          )}
+
+          <div className="mode-switch" role="tablist" aria-label="棋谱格式">
+            <button
+              type="button"
+              className={mode === 'pgn' ? 'active' : ''}
+              onClick={() => updateMode('pgn')}
+              role="tab"
+              aria-selected={mode === 'pgn'}
+            >
+              PGN
+            </button>
+            <button
+              type="button"
+              className={mode === 'fen' ? 'active' : ''}
+              onClick={() => updateMode('fen')}
+              role="tab"
+              aria-selected={mode === 'fen'}
+            >
+              FEN
+            </button>
+          </div>
+
+          <label className="input-block">
+            <span>{mode === 'pgn' ? '粘贴 PGN 棋谱' : '粘贴 FEN 局面'}</span>
+            <textarea
+              value={text}
+              onChange={(event) => updateText(event.target.value)}
+              spellCheck={false}
+            />
+          </label>
+
+          {result.error ? (
+            <div className="error-box">{result.error}</div>
+          ) : (
+            <MoveList
+              source={result.source}
+              moves={result.moves}
+              positions={result.positions}
+              activeIndex={safeIndex}
+              variationPositions={variationPositions}
+              activeVariationIndex={variationIndex}
+              notesByPosition={notesByPosition}
+              noteContext={{ mode, text }}
+              hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
+              onSelect={updatePositionIndex}
+              onVariationSelect={(index) => {
+                setVariationIndex(index);
+                setSelectedSquare(null);
+              }}
+            />
+          )}
+        </aside>
+
+        <section {...regions.resultsArea}>
           <GuessTrainingPanel
             isEnabled={isGuessMode}
             nextMove={nextOriginalMove}
@@ -4721,33 +4862,6 @@ function App() {
             onPractice={practiceMistakeCard}
             onMarkUnsolved={markMistakeCardUnsolved}
             onDelete={deleteMistakeCard}
-          />
-
-          <div className="variation-panel">
-            <div>
-              <span className="variation-label">{isVariationMode ? '变化图' : '原棋谱'}</span>
-              <p>
-                {isVariationMode
-                  ? `已试走 ${variationPositions.length} 手，当前在${
-                      activeVariation?.label ?? '原局面'
-                    }。`
-                  : '点击棋子后选择目标格，可临时试走。'}
-              </p>
-            </div>
-            <button type="button" onClick={restoreOriginalPosition} disabled={!isVariationMode}>
-              恢复原局面
-            </button>
-            <button type="button" onClick={undoVariationMove} disabled={!isVariationMode}>
-              悔一步
-            </button>
-            <button type="button" onClick={saveCurrentVariation} disabled={!isVariationMode}>
-              保存变化
-            </button>
-          </div>
-
-          <SavedVariationsPanel
-            variations={savedVariations}
-            onDelete={deleteSavedVariation}
           />
 
           <EvaluationSidePanel side={evaluationSide} onSideChange={setEvaluationSide} />
@@ -4838,93 +4952,7 @@ function App() {
             onCancel={cancelGlobalAnalysis}
             onSelectMove={(index) => updatePositionIndex(index + 1)}
           />
-
-          {current && (
-            <TrainingNotes
-              pgnComment={current.comment}
-              note={currentNote}
-              onNoteChange={updateCurrentNote}
-            />
-          )}
-
-          <div className="fen-display">
-            <span>FEN</span>
-            <code>{activeFen}</code>
-          </div>
-        </div>
-
-        <aside className="side-panel">
-          <ImportExportTools
-            canExportPgn={mode === 'pgn' && !result.error}
-            onImportPgn={importPgnFile}
-            onExportPgn={exportCurrentPgn}
-            onCopyFen={copyCurrentFen}
-          />
-
-          {bulkPgnLibrary && (
-            <BulkPgnLibraryPanel
-              library={bulkPgnLibrary}
-              games={filteredBulkPgnGames}
-              insights={bulkPgnLibraryInsights}
-              filters={bulkPgnFilters}
-              activeContent={text}
-              onFilterChange={updateBulkPgnFilter}
-              onSelectGame={loadBulkPgnGame}
-              onToggleImportant={toggleBulkPgnImportant}
-            />
-          )}
-
-          <div className="mode-switch" role="tablist" aria-label="棋谱格式">
-            <button
-              type="button"
-              className={mode === 'pgn' ? 'active' : ''}
-              onClick={() => updateMode('pgn')}
-              role="tab"
-              aria-selected={mode === 'pgn'}
-            >
-              PGN
-            </button>
-            <button
-              type="button"
-              className={mode === 'fen' ? 'active' : ''}
-              onClick={() => updateMode('fen')}
-              role="tab"
-              aria-selected={mode === 'fen'}
-            >
-              FEN
-            </button>
-          </div>
-
-          <label className="input-block">
-            <span>{mode === 'pgn' ? '粘贴 PGN 棋谱' : '粘贴 FEN 局面'}</span>
-            <textarea
-              value={text}
-              onChange={(event) => updateText(event.target.value)}
-              spellCheck={false}
-            />
-          </label>
-
-          {result.error ? (
-            <div className="error-box">{result.error}</div>
-          ) : (
-            <MoveList
-              source={result.source}
-              moves={result.moves}
-              positions={result.positions}
-              activeIndex={safeIndex}
-              variationPositions={variationPositions}
-              activeVariationIndex={variationIndex}
-              notesByPosition={notesByPosition}
-              noteContext={{ mode, text }}
-              hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
-              onSelect={updatePositionIndex}
-              onVariationSelect={(index) => {
-                setVariationIndex(index);
-                setSelectedSquare(null);
-              }}
-            />
-          )}
-        </aside>
+        </section>
       </section>
 
       {pendingPromotion && (
@@ -6627,6 +6655,8 @@ function VariationMoveList({
 
 export {
   App,
+  getLayoutRegionClassNames,
+  getLayoutRegionProps,
   analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildDailyTrainingPlan,

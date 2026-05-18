@@ -51,17 +51,22 @@ button:disabled {
   padding: 24px;
 }
 
-.workspace {
+.main-workspace {
   display: grid;
-  grid-template-columns: minmax(360px, 1fr) 420px;
+  grid-template-columns: minmax(360px, 1fr) minmax(320px, 420px);
   gap: 24px;
   max-width: 1280px;
   margin: 0 auto;
 }
 
-.board-area,
-.side-panel {
+.board-column,
+.panel-column,
+.results-area {
   min-width: 0;
+}
+
+.results-area {
+  grid-column: 1 / -1;
 }
 
 .top-bar {
@@ -1358,7 +1363,7 @@ h2 {
   font-size: 0.86rem;
 }
 
-.side-panel {
+.panel-column {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -1698,11 +1703,11 @@ textarea:focus {
     padding: 16px;
   }
 
-  .workspace {
+  .main-workspace {
     grid-template-columns: 1fr;
   }
 
-  .side-panel {
+  .panel-column {
     min-height: auto;
   }
 
