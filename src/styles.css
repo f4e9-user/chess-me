@@ -84,6 +84,67 @@ button:disabled {
   min-width: 0;
 }
 
+.workspace-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 14px;
+  box-shadow: 0 14px 34px rgba(30, 39, 32, 0.08);
+}
+
+.workspace-panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.workspace-panel-heading::before {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.workspace-panel-heading span {
+  text-transform: uppercase;
+}
+
+.workspace-panel-body {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.board-focus-panel,
+.review-report-panel,
+.training-plan-panel,
+.strength-profile-panel,
+.review-history-panel {
+  grid-column: 1 / -1;
+}
+
+.current-analysis-panel .workspace-panel-body,
+.training-plan-panel .workspace-panel-body {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.current-analysis-panel .global-analysis-panel {
+  grid-column: 1 / -1;
+}
+
+.history-import-panel,
+.current-game-input-panel {
+  background: rgba(255, 255, 255, 0.92);
+}
+
 .top-bar {
   display: flex;
   align-items: flex-end;
