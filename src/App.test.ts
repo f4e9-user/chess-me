@@ -25,6 +25,7 @@ import {
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
   buildGlobalAnalysisPartialReport,
+  buildGlobalAnalysisPlayerSummary,
   buildGlobalAnalysisReport,
   buildGlobalAnalysisPerspectiveLabel,
   buildKeyMomentSummary,
@@ -474,6 +475,34 @@ describe('strength profile helpers', () => {
 });
 
 describe('review report helpers', () => {
+  it('keeps review report and strength profile focused on the evaluated side instead of blaming opponent moves', () => {
+    const analyses = [
+      { moveIndex: 10, label: '6. Bc4', san: 'Bc4', moveColor: 'w' as const, quality: '疑问手' as const, centipawnLoss: 60, beforeScore: 30, afterScore: -30, isSwingPoint: false, bestMoveSan: 'Be2', multiPvLines: [] },
+      { moveIndex: 11, label: '6... Qh4', san: 'Qh4', moveColor: 'b' as const, quality: '败着' as const, centipawnLoss: 420, beforeScore: -30, afterScore: 390, isSwingPoint: true, bestMoveSan: 'Nf6', multiPvLines: [] },
+      { moveIndex: 12, label: '7. Nf3', san: 'Nf3', moveColor: 'w' as const, quality: '失误' as const, centipawnLoss: 140, beforeScore: 390, afterScore: 250, isSwingPoint: true, bestMoveSan: 'Qe2', multiPvLines: [] },
+    ];
+    const commonPlans = {
+      opening: { eco: 'C20', name: 'King Pawn', status: 'recognized' as const, matchedPly: 4 },
+      middlegamePlan: { focusCards: [], themeStats: [], summary: '暂无中局卡。' },
+      endgamePlan: { phase: 'not-endgame' as const, type: '非残局' as const, cards: [], themes: [], summary: '非残局。' },
+    };
+
+    const whiteReport = buildReviewReport({ ...commonPlans, analyses, evaluatedColor: 'w' });
+    expect(whiteReport.biggestMistake?.label).toBe('7. Nf3');
+    expect(whiteReport.summary).toContain('被评价方：白方');
+    expect(whiteReport.summary).not.toContain('6... Qh4');
+    expect(whiteReport.trainingAdvice).toContain('白方走棋');
+
+    const whiteProfile = buildStrengthProfile({
+      analyses,
+      evaluatedColor: 'w',
+      mistakeCards: [],
+      candidateStats: { sessions: 0, validSessions: 0, answerCovered: 0, bestCovered: 0, answerInCandidatesButNotSelected: 0, sortingScoreTotal: 0 },
+    });
+    expect(whiteProfile.summary).toContain('白方棋力画像');
+    expect(whiteProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(200);
+  });
+
   it('builds a full game review report with phase summary, biggest mistake, training advice, and markdown export', () => {
     const report = buildReviewReport({
       opening: { eco: 'C60', name: 'Ruy Lopez', status: 'deviation', matchedPly: 5, deviationMove: 'h6', nextBookMove: 'a6' },
@@ -495,6 +524,7 @@ describe('review report helpers', () => {
         cards: [{ id: 'end-46', moveIndex: 46, label: '24... Ke1', san: 'Ke1', endgameType: '车残局', missedChance: '错过守和机会', recommendedMove: 'Kd1', prompt: '复盘残局守和。', tags: ['残局', '车残局'] }],
         themes: ['王的积极性'], summary: '识别到车残局。',
       },
+      evaluatedColor: 'w',
     });
 
     expect(report.summary).toContain('最大失误：9. Nxe5');
@@ -960,6 +990,29 @@ describe('analysis controls, cache, and key moment helpers', () => {
     });
     expect(boardPerspectiveWhiteBottomBlackMover.summary).toContain('评价方：棋盘下方（白方）');
     expect(boardPerspectiveWhiteBottomBlackMover.summary).toContain('走棋方：黑方');
+  });
+
+  it('filters global analysis rows by evaluated side so white and black moves can be reviewed separately', () => {
+    const analyses = buildGlobalAnalysisReport({
+      moves: [
+        { san: 'e4', color: 'w' },
+        { san: 'e5', color: 'b' },
+        { san: 'Qh5', color: 'w' },
+        { san: 'Nc6', color: 'b' },
+      ],
+      positionScores: [20, 25, 240, -180, -220],
+      bestMoves: ['e4', 'Nf6', 'Nc3', 'Nf6'],
+    });
+
+    expect(filterGlobalAnalysisMoments(analyses, 'white').map((item) => item.san)).toEqual(['e4', 'Qh5']);
+    expect(filterGlobalAnalysisMoments(analyses, 'black').map((item) => item.san)).toEqual(['e5', 'Nc6']);
+    expect(filterGlobalAnalysisMoments(analyses, 'key-white').map((item) => item.san)).toEqual(['Qh5']);
+    expect(filterGlobalAnalysisMoments(analyses, 'key-black').map((item) => item.san)).toEqual(['e5']);
+
+    const whiteSummary = buildGlobalAnalysisPlayerSummary(analyses, 'w');
+    expect(whiteSummary).toMatchObject({ colorLabel: '白方', totalMoves: 2, keyMoments: 1 });
+    expect(whiteSummary.summary).toContain('白方行动 2 手');
+    expect(whiteSummary.summary).toContain('关键时刻 1 个');
   });
 
   it('builds report rows with multipv lines and filters key training moments', () => {

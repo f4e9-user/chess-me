@@ -264,7 +264,7 @@ type MistakeCard = {
 };
 
 type AnalysisDepthPreset = 'fast' | 'standard' | 'deep';
-type GlobalAnalysisMomentFilter = 'all' | 'key';
+type GlobalAnalysisMomentFilter = 'all' | 'key' | 'white' | 'black' | 'key-white' | 'key-black';
 
 type AnalysisDepthPresetConfig = {
   depth: number;
@@ -1202,11 +1202,39 @@ function buildKeyMomentSummary(analyses: GlobalMoveAnalysis[]) {
 }
 
 function filterGlobalAnalysisMoments(analyses: GlobalMoveAnalysis[], filter: GlobalAnalysisMomentFilter) {
-  if (filter === 'all') {
-    return analyses;
-  }
+  const colorFilter: Color | null = filter.includes('white') ? 'w' : filter.includes('black') ? 'b' : null;
+  const keyOnly = filter === 'key' || filter.startsWith('key-');
 
-  return analyses.filter((item) => classifyKeyAnalysisMoment(item).isKeyMoment);
+  return analyses.filter((item) => {
+    const matchesColor = !colorFilter || inferMoveColorFromAnalysis(item) === colorFilter;
+    const matchesMoment = !keyOnly || classifyKeyAnalysisMoment(item).isKeyMoment;
+    return matchesColor && matchesMoment;
+  });
+}
+
+type GlobalAnalysisPlayerSummary = {
+  color: Color;
+  colorLabel: string;
+  totalMoves: number;
+  keyMoments: number;
+  totalLoss: number;
+  summary: string;
+};
+
+function buildGlobalAnalysisPlayerSummary(analyses: GlobalMoveAnalysis[], color: Color): GlobalAnalysisPlayerSummary {
+  const colorAnalyses = analyses.filter((item) => inferMoveColorFromAnalysis(item) === color);
+  const keyMoments = colorAnalyses.filter((item) => classifyKeyAnalysisMoment(item).isKeyMoment);
+  const totalLoss = colorAnalyses.reduce((sum, item) => sum + item.centipawnLoss, 0);
+  const colorLabel = getColorLabel(color);
+
+  return {
+    color,
+    colorLabel,
+    totalMoves: colorAnalyses.length,
+    keyMoments: keyMoments.length,
+    totalLoss,
+    summary: `${colorLabel}行动 ${colorAnalyses.length} 手 · 关键时刻 ${keyMoments.length} 个 · 累计损失 ${totalLoss} cp`,
+  };
 }
 
 function formatVariationMoveLabel(move: Move) {
@@ -1851,12 +1879,16 @@ function buildStrengthProfile({
   analyses,
   mistakeCards,
   candidateStats,
+  evaluatedColor,
 }: {
   analyses: GlobalMoveAnalysis[];
   mistakeCards: Array<Pick<MistakeCard, 'tags' | 'attempts' | 'solvedCount'>>;
   candidateStats: CandidateTrainingStats;
+  evaluatedColor?: Color;
 }): StrengthProfile {
-  const relevantAnalyses = analyses.filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint || analysis.centipawnLoss > 0);
+  const perspectiveAnalyses = evaluatedColor ? analyses.filter((analysis) => inferMoveColorFromAnalysis(analysis) === evaluatedColor) : analyses;
+  const evaluatedSideLabel = evaluatedColor ? getColorLabel(evaluatedColor) : '双方';
+  const relevantAnalyses = perspectiveAnalyses.filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint || analysis.centipawnLoss > 0);
   const phaseMap = new Map<StrengthPhaseBreakdown['phase'], StrengthPhaseBreakdown>([
     ['开局', { phase: '开局', mistakes: 0, totalLoss: 0 }],
     ['中局', { phase: '中局', mistakes: 0, totalLoss: 0 }],
@@ -1930,8 +1962,8 @@ function buildStrengthProfile({
 
   return {
     summary: weakAreas.length
-      ? `首要短板：${weakAreas[0]}。下一步：${trainingPriorities[0] ?? '保持每盘复盘。'}`
-      : '暂无足够数据建立稳定棋力画像；建议先完成整盘分析和错题训练。',
+      ? `${evaluatedSideLabel}棋力画像｜首要短板：${weakAreas[0]}。下一步：${trainingPriorities[0] ?? '保持每盘复盘。'}`
+      : `${evaluatedSideLabel}棋力画像｜暂无足够数据建立稳定棋力画像；建议先完成整盘分析和错题训练。`,
     phaseBreakdown,
     mistakeTypes,
     weakAreas,
@@ -2190,13 +2222,17 @@ function buildReviewReport({
   analyses,
   middlegamePlan,
   endgamePlan,
+  evaluatedColor,
 }: {
   opening: OpeningMatch;
   analyses: GlobalMoveAnalysis[];
   middlegamePlan: MiddlegamePlanTraining;
   endgamePlan: EndgameTrainingPlan;
+  evaluatedColor?: Color;
 }): ReviewReport {
-  const riskyMoves = filterGlobalAnalysisMoments(analyses, 'key')
+  const reportAnalyses = evaluatedColor ? analyses.filter((analysis) => inferMoveColorFromAnalysis(analysis) === evaluatedColor) : analyses;
+  const evaluatedSideLabel = evaluatedColor ? getColorLabel(evaluatedColor) : '双方';
+  const riskyMoves = filterGlobalAnalysisMoments(reportAnalyses, 'key')
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
   const biggestMistake = riskyMoves[0] ?? null;
   const openingSection =
@@ -2210,17 +2246,17 @@ function buildReviewReport({
     endgamePlan.phase === 'endgame'
       ? `${endgamePlan.summary} 主题：${endgamePlan.themes.join('、') || '基础残局转换'}。`
       : '本局尚未识别到明确残局阶段。';
-  const biggestMistakePerspective = biggestMistake ? describeGlobalAnalysisPerspective(biggestMistake, 'white') : null;
+  const biggestMistakePerspective = biggestMistake ? describeGlobalAnalysisPerspective(biggestMistake, evaluatedColor ? 'white' : 'sideToMove') : null;
   const biggestMistakeSection = biggestMistake
-    ? `最大失误：${biggestMistake.label} ${biggestMistake.san}，${biggestMistakePerspective?.summary}；建议比较引擎首选 ${biggestMistake.bestMoveSan || '-'}。`
-    : '最大失误：暂未发现明显失误。';
+    ? `被评价方：${evaluatedSideLabel}。最大失误：${biggestMistake.label} ${biggestMistake.san}，${biggestMistakePerspective?.summary}；建议比较引擎首选 ${biggestMistake.bestMoveSan || '-'}。`
+    : `被评价方：${evaluatedSideLabel}。最大失误：暂未发现明显失误。`;
   const topTheme = middlegamePlan.themeStats[0]?.theme ?? endgamePlan.themes[0] ?? '候选着法复盘';
   const trainingAdvice = biggestMistake
     ? `优先训练${topTheme}，并把 ${biggestMistake.label}（${biggestMistakePerspective?.moverLabel}走棋，${biggestMistakePerspective?.perspectiveLabel}）前的候选着法写成 2-3 个备选方案。`
     : `优先训练${topTheme}，保持每盘棋复盘开局、中局和残局三个阶段。`;
   const summary = biggestMistake
-    ? `本局复盘完成，${opening.name}，最大失误：${biggestMistake.label}，${biggestMistakePerspective?.summary}，推荐训练：${topTheme}。`
-    : `本局复盘完成，${opening.name}，暂未发现重大失误，推荐训练：${topTheme}。`;
+    ? `本局复盘完成，被评价方：${evaluatedSideLabel}，${opening.name}，最大失误：${biggestMistake.label}，${biggestMistakePerspective?.summary}，推荐训练：${topTheme}。`
+    : `本局复盘完成，被评价方：${evaluatedSideLabel}，${opening.name}，暂未发现重大失误，推荐训练：${topTheme}。`;
   const markdown = [
     '# Chess Me 复盘报告',
     '',
@@ -3365,8 +3401,9 @@ function App() {
         analyses: globalAnalysis,
         middlegamePlan: middlegamePlanTraining,
         endgamePlan: endgameTrainingPlan,
+        evaluatedColor: evaluationPerspective === 'white' ? 'w' : evaluationPerspective === 'board' ? (isBoardFlipped ? 'b' : 'w') : undefined,
       }),
-    [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch],
+    [endgameTrainingPlan, evaluationPerspective, globalAnalysis, isBoardFlipped, middlegamePlanTraining, openingMatch],
   );
   const naturalLanguageCoach = useMemo(
     () => buildNaturalLanguageCoachReport({
@@ -3386,8 +3423,13 @@ function App() {
     [bulkPgnLibrary, filteredBulkPgnGames],
   );
   const strengthProfile = useMemo(
-    () => buildStrengthProfile({ analyses: globalAnalysis, mistakeCards, candidateStats }),
-    [candidateStats, globalAnalysis, mistakeCards],
+    () => buildStrengthProfile({
+      analyses: globalAnalysis,
+      mistakeCards,
+      candidateStats,
+      evaluatedColor: evaluationPerspective === 'white' ? 'w' : evaluationPerspective === 'board' ? (isBoardFlipped ? 'b' : 'w') : undefined,
+    }),
+    [candidateStats, evaluationPerspective, globalAnalysis, isBoardFlipped, mistakeCards],
   );
   const filteredReviewReportHistory = useMemo(
     () => filterReviewReportHistory(reviewReportHistory, {
@@ -5461,10 +5503,30 @@ function GlobalAnalysisPanel({
           <button type="button" className={momentFilter === 'key' ? 'active' : ''} onClick={() => onMomentFilterChange('key')}>
             关键时刻
           </button>
+          <button type="button" className={momentFilter === 'white' ? 'active' : ''} onClick={() => onMomentFilterChange('white')}>
+            白棋行动
+          </button>
+          <button type="button" className={momentFilter === 'black' ? 'active' : ''} onClick={() => onMomentFilterChange('black')}>
+            黑棋行动
+          </button>
+          <button type="button" className={momentFilter === 'key-white' ? 'active' : ''} onClick={() => onMomentFilterChange('key-white')}>
+            白棋关键
+          </button>
+          <button type="button" className={momentFilter === 'key-black' ? 'active' : ''} onClick={() => onMomentFilterChange('key-black')}>
+            黑棋关键
+          </button>
         </div>
       </div>
 
       <p className="analysis-preset-help">{presetConfig.description}</p>
+      {analyses.length > 0 && (
+        <div className="analysis-player-summaries" aria-label="黑白行动统计">
+          {(['w', 'b'] as Color[]).map((color) => {
+            const playerSummary = buildGlobalAnalysisPlayerSummary(analyses, color);
+            return <span key={color}>{playerSummary.summary}</span>;
+          })}
+        </div>
+      )}
       {analyses.length > 0 && <p className="analysis-key-summary">{keyMomentSummary}</p>}
 
       {swingPoints.length > 0 && (
@@ -6193,6 +6255,7 @@ export {
   buildCandidateMultiPvComparison,
   buildGlobalAnalysisCacheKey,
   buildGlobalAnalysisCancellationPlan,
+  buildGlobalAnalysisPlayerSummary,
   buildGlobalAnalysisPartialReport,
   buildGlobalAnalysisReport,
   buildGlobalAnalysisPerspectiveLabel,
