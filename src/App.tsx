@@ -29,6 +29,7 @@ type ParseResult = {
   moves: Move[];
   error?: string;
   source: ReplayMode;
+  headers: Record<string, string>;
 };
 
 type BulkPgnSource = 'lichess' | 'chess.com' | 'manual' | 'unknown';
@@ -264,6 +265,7 @@ type MistakeCard = {
 };
 
 type AnalysisDepthPreset = 'fast' | 'standard' | 'deep';
+type EvaluationSide = 'white' | 'black' | 'both';
 type GlobalAnalysisMomentFilter = 'all' | 'key' | 'white' | 'black' | 'key-white' | 'key-black';
 
 type AnalysisDepthPresetConfig = {
@@ -388,6 +390,8 @@ type EndgameTrainingCard = {
   moveIndex: number;
   label: string;
   san: string;
+  moverLabel: string;
+  evaluatedSideLabel: string;
   endgameType: EndgameType;
   missedChance: string;
   recommendedMove: string;
@@ -438,6 +442,7 @@ type NaturalLanguagePositionExplanation = {
 
 type NaturalLanguageCoachReport = {
   summary: string;
+  filterLabel: string;
   positionExplanations: NaturalLanguagePositionExplanation[];
   practiceThemes: NaturalLanguagePracticeTheme[];
   markdown: string;
@@ -462,6 +467,7 @@ type ReviewReportHistoryItem = {
   summary: string;
   analysisSummary: string;
   keyMoments: ReviewReportHistoryKeyMoment[];
+  strengthProfileAnalyses?: GlobalMoveAnalysis[];
   trainingAdvice: string;
   markdown: string;
   isFavorite: boolean;
@@ -499,6 +505,28 @@ type StrengthRadarAxis = {
   note: string;
 };
 
+type StrengthProfileRange = 'current' | 'recent-1' | 'recent-5' | 'recent-20' | 'all';
+
+type StrengthProfileColorStats = {
+  totalMoves: number;
+  keyMoments: number;
+  totalLoss: number;
+  mistakeCount: number;
+};
+
+type StrengthProfileGameSnapshot = {
+  id: string;
+  title: string;
+  importedAt: string;
+  analyses: GlobalMoveAnalysis[];
+  perColor: Record<'white' | 'black', StrengthProfileColorStats>;
+};
+
+type StrengthProfileSampleInfo = {
+  gameCount: number;
+  rangeLabel: string;
+};
+
 type StrengthProfile = {
   summary: string;
   phaseBreakdown: StrengthPhaseBreakdown[];
@@ -506,6 +534,7 @@ type StrengthProfile = {
   weakAreas: string[];
   trainingPriorities: string[];
   radarAxes: StrengthRadarAxis[];
+  sampleInfo?: StrengthProfileSampleInfo;
 };
 
 const initialPgn = `[Event "Training Review"]
@@ -854,6 +883,7 @@ function parsePgn(input: string): ParseResult {
       source: 'pgn',
       positions: [],
       moves: [],
+      headers: {},
       error: '请粘贴 PGN 棋谱。',
     };
   }
@@ -863,6 +893,7 @@ function parsePgn(input: string): ParseResult {
     loaded.loadPgn(trimmed);
 
     const moves = loaded.history({ verbose: true });
+    const headers = loaded.getHeaders();
     const commentsByFen = new Map(
       (loaded.getComments() as PgnComment[]).map(({ fen, comment }) => [fen, comment]),
     );
@@ -891,12 +922,13 @@ function parsePgn(input: string): ParseResult {
       });
     }
 
-    return { source: 'pgn', positions, moves };
+    return { source: 'pgn', positions, moves, headers };
   } catch (error) {
     return {
       source: 'pgn',
       positions: [],
       moves: [],
+      headers: {},
       error: error instanceof Error ? error.message : 'PGN 解析失败。',
     };
   }
@@ -913,6 +945,7 @@ function parseFen(input: string): ParseResult {
       source: 'fen',
       positions: [],
       moves: [],
+      headers: {},
       error: '请粘贴 FEN。多行 FEN 会作为局面序列复盘。',
     };
   }
@@ -932,12 +965,13 @@ function parseFen(input: string): ParseResult {
         source: 'fen',
         positions: [],
         moves: [],
+        headers: {},
         error: `第 ${index + 1} 行 FEN 解析失败：${detail}`,
       };
     }
   }
 
-  return { source: 'fen', positions, moves: [] };
+  return { source: 'fen', positions, moves: [], headers: {} };
 }
 
 function formatMoveLabel(move: Move, index: number) {
@@ -1083,6 +1117,39 @@ function getColorLabel(color: Color) {
   return color === 'w' ? '白方' : '黑方';
 }
 
+function evaluationSideToColor(side: EvaluationSide): Color | undefined {
+  if (side === 'white') {
+    return 'w';
+  }
+
+  if (side === 'black') {
+    return 'b';
+  }
+
+  return undefined;
+}
+
+function getEvaluationSideLabel(side: EvaluationSide) {
+  const color = evaluationSideToColor(side);
+  return color ? getColorLabel(color) : '双方';
+}
+
+function filterAnalysesByEvaluationSide<T extends Pick<GlobalMoveAnalysis, 'moveColor' | 'label'>>(
+  analyses: T[],
+  side: EvaluationSide,
+) {
+  const color = evaluationSideToColor(side);
+  if (!color) {
+    return analyses;
+  }
+
+  return analyses.filter((item) => inferMoveColorFromAnalysis(item) === color);
+}
+
+function filterKeyAnalysesByEvaluationSide<T extends GlobalMoveAnalysis>(analyses: T[], side: EvaluationSide) {
+  return filterAnalysesByEvaluationSide(analyses, side).filter((item) => classifyKeyAnalysisMoment(item).isKeyMoment);
+}
+
 function buildGlobalAnalysisPerspectiveLabel({
   moveColor,
   perspective,
@@ -1202,7 +1269,9 @@ function buildKeyMomentSummary(analyses: GlobalMoveAnalysis[]) {
 }
 
 function filterGlobalAnalysisMoments(analyses: GlobalMoveAnalysis[], filter: GlobalAnalysisMomentFilter) {
-  const colorFilter: Color | null = filter.includes('white') ? 'w' : filter.includes('black') ? 'b' : null;
+  const colorFilter = evaluationSideToColor(
+    filter.includes('white') ? 'white' : filter.includes('black') ? 'black' : 'both',
+  );
   const keyOnly = filter === 'key' || filter.startsWith('key-');
 
   return analyses.filter((item) => {
@@ -1210,6 +1279,18 @@ function filterGlobalAnalysisMoments(analyses: GlobalMoveAnalysis[], filter: Glo
     const matchesMoment = !keyOnly || classifyKeyAnalysisMoment(item).isKeyMoment;
     return matchesColor && matchesMoment;
   });
+}
+
+function getGlobalAnalysisMomentFilterLabel(filter: GlobalAnalysisMomentFilter) {
+  const labels: Record<GlobalAnalysisMomentFilter, string> = {
+    all: '全部',
+    key: '关键时刻',
+    white: '白棋行动',
+    black: '黑棋行动',
+    'key-white': '白棋关键',
+    'key-black': '黑棋关键',
+  };
+  return labels[filter];
 }
 
 type GlobalAnalysisPlayerSummary = {
@@ -1686,8 +1767,12 @@ function classifyMiddlegameTheme(analysis: GlobalMoveAnalysis) {
   return '候选着法与风险控制';
 }
 
-function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): MiddlegamePlanTraining {
-  const middlegameAnalyses = analyses.filter((item) => item.moveIndex >= 8 && item.moveIndex <= 40);
+function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[], evaluationSide: EvaluationSide = 'both'): MiddlegamePlanTraining {
+  const evaluatedSideLabel = getEvaluationSideLabel(evaluationSide);
+  const middlegameAnalyses = filterAnalysesByEvaluationSide(
+    analyses.filter((item) => item.moveIndex >= 8 && item.moveIndex <= 40),
+    evaluationSide,
+  );
   const riskyMoves = middlegameAnalyses
     .filter((item) => item.isSwingPoint || item.quality === '失误' || item.quality === '败着')
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
@@ -1722,8 +1807,8 @@ function buildMiddlegamePlanTraining(analyses: GlobalMoveAnalysis[]): Middlegame
 
   const themeStats = [...themeMap.values()].sort((a, b) => b.totalLoss - a.totalLoss || b.count - a.count);
   const summary = focusCards.length
-    ? `发现 ${focusCards.length} 个关键中局计划点，优先训练：${focusCards[0].topic}。`
-    : '暂未发现明显中局计划训练点；建议先运行整盘分析。';
+    ? `被评价方：${evaluatedSideLabel}。发现 ${focusCards.length} 个关键中局计划点，优先训练：${focusCards[0].topic}。`
+    : `被评价方：${evaluatedSideLabel}。暂未发现明显中局计划训练点；建议先运行整盘分析。`;
 
   return { focusCards, themeStats, summary };
 }
@@ -1786,10 +1871,13 @@ function classifyEndgameMissedChance(analysis: GlobalMoveAnalysis) {
 function buildEndgameTrainingPlan({
   positions,
   analyses,
+  evaluationSide = 'both',
 }: {
   positions: Array<Pick<ReplayPosition, 'fen' | 'label'>>;
   analyses: GlobalMoveAnalysis[];
+  evaluationSide?: EvaluationSide;
 }): EndgameTrainingPlan {
+  const evaluatedSideLabel = getEvaluationSideLabel(evaluationSide);
   const endgameStartIndex = positions.findIndex((position) => classifyEndgameType(position.fen) !== '非残局');
 
   if (endgameStartIndex < 0) {
@@ -1798,7 +1886,7 @@ function buildEndgameTrainingPlan({
       type: '非残局',
       cards: [],
       themes: [],
-      summary: '尚未进入残局；运行整盘分析后可继续观察后半盘。',
+      summary: `被评价方：${evaluatedSideLabel}。尚未进入残局；运行整盘分析后可继续观察后半盘。`,
     };
   }
 
@@ -1806,7 +1894,10 @@ function buildEndgameTrainingPlan({
     .slice(endgameStartIndex)
     .map((position) => classifyEndgameType(position.fen))
     .find((candidate) => candidate !== '非残局' && candidate !== '兵残局') ?? classifyEndgameType(positions[endgameStartIndex].fen);
-  const endgameAnalyses = analyses.filter((analysis) => analysis.moveIndex >= Math.max(0, endgameStartIndex - 1));
+  const endgameAnalyses = filterAnalysesByEvaluationSide(
+    analyses.filter((analysis) => analysis.moveIndex >= Math.max(0, endgameStartIndex - 1)),
+    evaluationSide,
+  );
   const cards = endgameAnalyses
     .filter((analysis) => analysis.centipawnLoss >= 80 || analysis.isSwingPoint)
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
@@ -1818,6 +1909,8 @@ function buildEndgameTrainingPlan({
         moveIndex: analysis.moveIndex,
         label: analysis.label,
         san: analysis.san,
+        moverLabel: perspective.moverLabel,
+        evaluatedSideLabel: perspective.evaluatedSideLabel,
         endgameType: type,
         missedChance: classifyEndgameMissedChance(analysis),
         recommendedMove: analysis.bestMoveSan,
@@ -1839,8 +1932,8 @@ function buildEndgameTrainingPlan({
     cards,
     themes: [...new Set(themes)],
     summary: cards.length
-      ? `识别到${type}，生成 ${cards.length} 张残局训练卡，优先检查：${cards[0].missedChance}。`
-      : `识别到${type}，暂未发现明显残局错题；建议重点复盘王和兵的转换。`,
+      ? `被评价方：${evaluatedSideLabel}。识别到${type}，生成 ${cards.length} 张残局训练卡，优先检查：${cards[0].missedChance}。`
+      : `被评价方：${evaluatedSideLabel}。识别到${type}，暂未发现明显残局错题；建议重点复盘王和兵的转换。`,
   };
 }
 
@@ -1875,19 +1968,101 @@ function clampStrengthScore(score: number) {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+function buildStrengthProfileGameSnapshot({
+  id,
+  title,
+  importedAt,
+  analyses,
+}: {
+  id: string;
+  title: string;
+  importedAt: string;
+  analyses: GlobalMoveAnalysis[];
+}): StrengthProfileGameSnapshot {
+  const normalizedAnalyses = analyses.map((analysis) => ({
+    ...analysis,
+    moveColor: analysis.moveColor ?? (analysis.moveIndex % 2 === 1 ? 'w' : 'b'),
+  }));
+  const createEmptyStats = (): StrengthProfileColorStats => ({ totalMoves: 0, keyMoments: 0, totalLoss: 0, mistakeCount: 0 });
+  const perColor = { white: createEmptyStats(), black: createEmptyStats() };
+
+  normalizedAnalyses.forEach((analysis) => {
+    const colorKey = analysis.moveColor === 'b' ? 'black' : 'white';
+    perColor[colorKey].totalMoves += 1;
+    perColor[colorKey].totalLoss += analysis.centipawnLoss;
+    if (analysis.isSwingPoint) {
+      perColor[colorKey].keyMoments += 1;
+    }
+    if (analysis.centipawnLoss > 0) {
+      perColor[colorKey].mistakeCount += 1;
+    }
+  });
+
+  return { id, title, importedAt, analyses: normalizedAnalyses, perColor };
+}
+
+function getStrengthProfileRangeLabel(range: StrengthProfileRange) {
+  if (range === 'current') {
+    return '当前对局';
+  }
+  if (range === 'all') {
+    return '全部已保存对局';
+  }
+  return `最近 ${Number(range.replace('recent-', ''))} 局`;
+}
+
+function getStrengthProfileRangeLimit(range: StrengthProfileRange) {
+  if (range === 'current' || range === 'all') {
+    return undefined;
+  }
+  return Number(range.replace('recent-', ''));
+}
+
+function selectStrengthProfileSnapshots(
+  snapshots: StrengthProfileGameSnapshot[],
+  range: StrengthProfileRange,
+): StrengthProfileGameSnapshot[] {
+  if (range === 'current') {
+    return snapshots.slice(0, 1);
+  }
+  const sortedSnapshots = [...snapshots].sort((a, b) => b.importedAt.localeCompare(a.importedAt));
+  const limit = getStrengthProfileRangeLimit(range);
+  return typeof limit === 'number' ? sortedSnapshots.slice(0, limit) : sortedSnapshots;
+}
+
+function buildStrengthProfileSnapshotsFromHistory(history: ReviewReportHistoryItem[]): StrengthProfileGameSnapshot[] {
+  return history
+    .filter((item) => (item.strengthProfileAnalyses?.length ?? 0) > 0)
+    .map((item) => buildStrengthProfileGameSnapshot({
+      id: item.id,
+      title: item.meta.event || `${item.meta.white} vs ${item.meta.black}`,
+      importedAt: item.savedAt,
+      analyses: item.strengthProfileAnalyses ?? [],
+    }));
+}
+
 function buildStrengthProfile({
   analyses,
+  snapshots,
   mistakeCards,
   candidateStats,
+  evaluationSide,
   evaluatedColor,
+  rangeLabel,
 }: {
-  analyses: GlobalMoveAnalysis[];
+  analyses?: GlobalMoveAnalysis[];
+  snapshots?: StrengthProfileGameSnapshot[];
   mistakeCards: Array<Pick<MistakeCard, 'tags' | 'attempts' | 'solvedCount'>>;
   candidateStats: CandidateTrainingStats;
+  evaluationSide?: EvaluationSide;
   evaluatedColor?: Color;
+  rangeLabel?: string;
 }): StrengthProfile {
-  const perspectiveAnalyses = evaluatedColor ? analyses.filter((analysis) => inferMoveColorFromAnalysis(analysis) === evaluatedColor) : analyses;
-  const evaluatedSideLabel = evaluatedColor ? getColorLabel(evaluatedColor) : '双方';
+  const snapshotAnalyses = snapshots?.flatMap((snapshot) => snapshot.analyses);
+  const sourceAnalyses = snapshotAnalyses ?? analyses ?? [];
+  const resolvedEvaluationSide: EvaluationSide = evaluationSide ?? (evaluatedColor === 'w' ? 'white' : evaluatedColor === 'b' ? 'black' : 'both');
+  const perspectiveAnalyses = filterAnalysesByEvaluationSide(sourceAnalyses, resolvedEvaluationSide);
+  const evaluatedSideLabel = getEvaluationSideLabel(resolvedEvaluationSide);
   const relevantAnalyses = perspectiveAnalyses.filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint || analysis.centipawnLoss > 0);
   const phaseMap = new Map<StrengthPhaseBreakdown['phase'], StrengthPhaseBreakdown>([
     ['开局', { phase: '开局', mistakes: 0, totalLoss: 0 }],
@@ -1960,15 +2135,24 @@ function buildStrengthProfile({
     candidateStats.validSessions ? '继续做 2-3 个候选着训练，要求先覆盖实战答案再排序。' : '',
   ].filter(Boolean);
 
+  const sampleInfo = snapshots
+    ? {
+        gameCount: snapshots.length,
+        rangeLabel: rangeLabel ?? `${snapshots.length} 局累计`,
+      }
+    : undefined;
+  const samplePrefix = sampleInfo ? `｜${sampleInfo.rangeLabel} · ${sampleInfo.gameCount} 局累计` : '';
+
   return {
     summary: weakAreas.length
-      ? `${evaluatedSideLabel}棋力画像｜首要短板：${weakAreas[0]}。下一步：${trainingPriorities[0] ?? '保持每盘复盘。'}`
-      : `${evaluatedSideLabel}棋力画像｜暂无足够数据建立稳定棋力画像；建议先完成整盘分析和错题训练。`,
+      ? `${evaluatedSideLabel}棋力画像${samplePrefix}｜首要短板：${weakAreas[0]}。下一步：${trainingPriorities[0] ?? '保持每盘复盘。'}`
+      : `${evaluatedSideLabel}棋力画像${samplePrefix}｜暂无足够数据建立稳定棋力画像；建议先完成整盘分析和错题训练。`,
     phaseBreakdown,
     mistakeTypes,
     weakAreas,
     trainingPriorities,
     radarAxes,
+    sampleInfo,
   };
 }
 
@@ -2183,22 +2367,27 @@ function buildNaturalLanguageCoachReport({
   reviewReport,
   candidateStats,
   history = [],
+  momentFilter = 'key',
 }: {
   analyses: GlobalMoveAnalysis[];
   reviewReport?: Pick<ReviewReport, 'summary' | 'trainingAdvice'> | { summary?: string; trainingAdvice?: string } | null;
   candidateStats?: CandidateTrainingStats | null;
   history?: Array<Pick<ReviewReportHistoryItem, 'trainingAdvice' | 'keyMoments'> | { trainingAdvice?: string; keyMoments?: Array<Partial<ReviewReportHistoryKeyMoment>> }>;
+  momentFilter?: GlobalAnalysisMomentFilter;
 }): NaturalLanguageCoachReport {
-  const focusAnalyses = filterGlobalAnalysisMoments(analyses, 'key')
+  const filterLabel = getGlobalAnalysisMomentFilterLabel(momentFilter);
+  const focusAnalyses = filterGlobalAnalysisMoments(analyses, momentFilter)
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
     .slice(0, 3);
   const positionExplanations = focusAnalyses.map((analysis) => buildNaturalLanguagePositionExplanation({ analysis, reviewReport }));
   const practiceThemes = buildPracticeThemeRecommendations({ reviewReport, candidateStats, history });
   const summary = positionExplanations.length
-    ? `自然语言教练生成 ${positionExplanations.length} 个局面解释，首要练习主题：${practiceThemes[0]?.theme ?? '候选着法与风险控制'}。`
-    : `自然语言教练暂未发现关键失误，建议保持${practiceThemes[0]?.theme ?? '候选着法与风险控制'}训练。`;
+    ? `自然语言教练按「${filterLabel}」生成 ${positionExplanations.length} 个局面解释，首要练习主题：${practiceThemes[0]?.theme ?? '候选着法与风险控制'}。`
+    : `自然语言教练按「${filterLabel}」暂未发现关键失误，建议保持${practiceThemes[0]?.theme ?? '候选着法与风险控制'}训练。`;
   const markdown = [
     '# 自然语言教练解释',
+    '',
+    `筛选：${filterLabel}`,
     '',
     `## 总览\n${summary}`,
     '',
@@ -2211,6 +2400,7 @@ function buildNaturalLanguageCoachReport({
 
   return {
     summary,
+    filterLabel,
     positionExplanations,
     practiceThemes,
     markdown,
@@ -2223,15 +2413,18 @@ function buildReviewReport({
   middlegamePlan,
   endgamePlan,
   evaluatedColor,
+  evaluationSide,
 }: {
   opening: OpeningMatch;
   analyses: GlobalMoveAnalysis[];
   middlegamePlan: MiddlegamePlanTraining;
   endgamePlan: EndgameTrainingPlan;
   evaluatedColor?: Color;
+  evaluationSide?: EvaluationSide;
 }): ReviewReport {
-  const reportAnalyses = evaluatedColor ? analyses.filter((analysis) => inferMoveColorFromAnalysis(analysis) === evaluatedColor) : analyses;
-  const evaluatedSideLabel = evaluatedColor ? getColorLabel(evaluatedColor) : '双方';
+  const reportEvaluationSide: EvaluationSide = evaluationSide ?? (evaluatedColor === 'w' ? 'white' : evaluatedColor === 'b' ? 'black' : 'both');
+  const reportAnalyses = filterAnalysesByEvaluationSide(analyses, reportEvaluationSide);
+  const evaluatedSideLabel = getEvaluationSideLabel(reportEvaluationSide);
   const riskyMoves = filterGlobalAnalysisMoments(reportAnalyses, 'key')
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex);
   const biggestMistake = riskyMoves[0] ?? null;
@@ -2246,7 +2439,9 @@ function buildReviewReport({
     endgamePlan.phase === 'endgame'
       ? `${endgamePlan.summary} 主题：${endgamePlan.themes.join('、') || '基础残局转换'}。`
       : '本局尚未识别到明确残局阶段。';
-  const biggestMistakePerspective = biggestMistake ? describeGlobalAnalysisPerspective(biggestMistake, evaluatedColor ? 'white' : 'sideToMove') : null;
+  const biggestMistakePerspective = biggestMistake
+    ? describeGlobalAnalysisPerspective(biggestMistake, reportEvaluationSide === 'both' ? 'sideToMove' : 'white')
+    : null;
   const biggestMistakeSection = biggestMistake
     ? `被评价方：${evaluatedSideLabel}。最大失误：${biggestMistake.label} ${biggestMistake.san}，${biggestMistakePerspective?.summary}；建议比较引擎首选 ${biggestMistake.bestMoveSan || '-'}。`
     : `被评价方：${evaluatedSideLabel}。最大失误：暂未发现明显失误。`;
@@ -2329,6 +2524,7 @@ function createReviewReportHistoryItem({
     summary: report.summary,
     analysisSummary: report.markdown,
     keyMoments,
+    strengthProfileAnalyses: analyses,
     trainingAdvice: report.trainingAdvice,
     markdown: report.markdown,
     isFavorite: false,
@@ -2396,6 +2592,30 @@ function buildReviewReportHistoryStats(history: ReviewReportHistoryItem[]): Revi
   };
 }
 
+function normalizeReviewReportHistoryAnalyses(analyses: unknown): GlobalMoveAnalysis[] {
+  if (!Array.isArray(analyses)) {
+    return [];
+  }
+
+  return analyses.map((analysis) => {
+    const partial = analysis as Partial<GlobalMoveAnalysis>;
+    return {
+      moveIndex: Number(partial.moveIndex) || 0,
+      label: String(partial.label || ''),
+      san: String(partial.san || ''),
+      moveColor: partial.moveColor === 'w' || partial.moveColor === 'b' ? partial.moveColor : undefined,
+      quality: partial.quality === '疑问手' || partial.quality === '失误' || partial.quality === '败着' ? partial.quality : '好棋',
+      centipawnLoss: Number(partial.centipawnLoss) || 0,
+      beforeScore: typeof partial.beforeScore === 'number' ? partial.beforeScore : null,
+      afterScore: typeof partial.afterScore === 'number' ? partial.afterScore : null,
+      isSwingPoint: Boolean(partial.isSwingPoint),
+      bestMoveSan: String(partial.bestMoveSan || ''),
+      primaryPv: Array.isArray(partial.primaryPv) ? partial.primaryPv.map(String) : undefined,
+      multiPvLines: Array.isArray(partial.multiPvLines) ? partial.multiPvLines : [],
+    };
+  });
+}
+
 function normalizeReviewReportHistoryItem(item: Partial<ReviewReportHistoryItem>): ReviewReportHistoryItem | null {
   if (!item.id || !item.pgn || !item.meta || !item.summary) {
     return null;
@@ -2415,6 +2635,7 @@ function normalizeReviewReportHistoryItem(item: Partial<ReviewReportHistoryItem>
     summary: String(item.summary),
     analysisSummary: item.analysisSummary || item.markdown || '',
     keyMoments: Array.isArray(item.keyMoments) ? item.keyMoments : [],
+    strengthProfileAnalyses: normalizeReviewReportHistoryAnalyses(item.strengthProfileAnalyses),
     trainingAdvice: item.trainingAdvice || '',
     markdown: item.markdown || item.analysisSummary || '',
     isFavorite: Boolean(item.isFavorite),
@@ -3292,6 +3513,11 @@ function App() {
   const [positionIndex, setPositionIndex] = useState(0);
   const [isBoardFlipped, setIsBoardFlipped] = useState(false);
   const [evaluationPerspective, setEvaluationPerspective] = useState<EvaluationPerspective>('white');
+  const [evaluationSide, setEvaluationSide] = useState<EvaluationSide>('white');
+  const [strengthProfileRange, setStrengthProfileRange] = useState<StrengthProfileRange>('current');
+  const [reviewReportEvaluationSide, setReviewReportEvaluationSide] = useState<EvaluationSide>(evaluationSide);
+  const [middlegamePlanEvaluationSide, setMiddlegamePlanEvaluationSide] = useState<EvaluationSide>(evaluationSide);
+  const [endgameTrainingEvaluationSide, setEndgameTrainingEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
   const [variationPositions, setVariationPositions] = useState<VariationPosition[]>([]);
   const [variationIndex, setVariationIndex] = useState(-1);
@@ -3389,10 +3615,13 @@ function App() {
     () => buildOpeningImprovementPlan(mode === 'pgn' ? [result.moves.map((move) => move.san)] : []),
     [mode, result.moves],
   );
-  const middlegamePlanTraining = useMemo(() => buildMiddlegamePlanTraining(globalAnalysis), [globalAnalysis]);
+  const middlegamePlanTraining = useMemo(
+    () => buildMiddlegamePlanTraining(globalAnalysis, middlegamePlanEvaluationSide),
+    [globalAnalysis, middlegamePlanEvaluationSide],
+  );
   const endgameTrainingPlan = useMemo(
-    () => buildEndgameTrainingPlan({ positions: result.positions, analyses: globalAnalysis }),
-    [globalAnalysis, result.positions],
+    () => buildEndgameTrainingPlan({ positions: result.positions, analyses: globalAnalysis, evaluationSide: endgameTrainingEvaluationSide }),
+    [endgameTrainingEvaluationSide, globalAnalysis, result.positions],
   );
   const reviewReport = useMemo(
     () =>
@@ -3401,9 +3630,9 @@ function App() {
         analyses: globalAnalysis,
         middlegamePlan: middlegamePlanTraining,
         endgamePlan: endgameTrainingPlan,
-        evaluatedColor: evaluationPerspective === 'white' ? 'w' : evaluationPerspective === 'board' ? (isBoardFlipped ? 'b' : 'w') : undefined,
+        evaluationSide: reviewReportEvaluationSide,
       }),
-    [endgameTrainingPlan, evaluationPerspective, globalAnalysis, isBoardFlipped, middlegamePlanTraining, openingMatch],
+    [endgameTrainingPlan, globalAnalysis, middlegamePlanTraining, openingMatch, reviewReportEvaluationSide],
   );
   const naturalLanguageCoach = useMemo(
     () => buildNaturalLanguageCoachReport({
@@ -3411,8 +3640,9 @@ function App() {
       reviewReport,
       candidateStats,
       history: reviewReportHistory,
+      momentFilter: globalAnalysisFilter,
     }),
-    [candidateStats, globalAnalysis, reviewReport, reviewReportHistory],
+    [candidateStats, globalAnalysis, globalAnalysisFilter, reviewReport, reviewReportHistory],
   );
   const filteredBulkPgnGames = useMemo(
     () => (bulkPgnLibrary ? filterBulkPgnLibraryGames(bulkPgnLibrary.games, bulkPgnFilters) : []),
@@ -3422,14 +3652,28 @@ function App() {
     () => (bulkPgnLibrary ? buildBulkPgnLibraryInsights(filteredBulkPgnGames) : null),
     [bulkPgnLibrary, filteredBulkPgnGames],
   );
+  const strengthProfileSnapshots = useMemo(() => {
+    const currentSnapshot = buildStrengthProfileGameSnapshot({
+      id: 'current-game',
+      title: result.headers.Event ?? '当前对局',
+      importedAt: new Date(0).toISOString(),
+      analyses: globalAnalysis,
+    });
+    return [currentSnapshot, ...buildStrengthProfileSnapshotsFromHistory(reviewReportHistory)];
+  }, [globalAnalysis, result.headers.Event, reviewReportHistory]);
+  const selectedStrengthProfileSnapshots = useMemo(
+    () => selectStrengthProfileSnapshots(strengthProfileSnapshots, strengthProfileRange),
+    [strengthProfileRange, strengthProfileSnapshots],
+  );
   const strengthProfile = useMemo(
     () => buildStrengthProfile({
-      analyses: globalAnalysis,
+      snapshots: selectedStrengthProfileSnapshots,
       mistakeCards,
       candidateStats,
-      evaluatedColor: evaluationPerspective === 'white' ? 'w' : evaluationPerspective === 'board' ? (isBoardFlipped ? 'b' : 'w') : undefined,
+      evaluationSide,
+      rangeLabel: getStrengthProfileRangeLabel(strengthProfileRange),
     }),
-    [candidateStats, evaluationPerspective, globalAnalysis, isBoardFlipped, mistakeCards],
+    [candidateStats, evaluationSide, mistakeCards, selectedStrengthProfileSnapshots, strengthProfileRange],
   );
   const filteredReviewReportHistory = useMemo(
     () => filterReviewReportHistory(reviewReportHistory, {
@@ -4506,6 +4750,8 @@ function App() {
             onDelete={deleteSavedVariation}
           />
 
+          <EvaluationSidePanel side={evaluationSide} onSideChange={setEvaluationSide} />
+
           <StockfishPanel
             status={engineStatus}
             analysis={analysis}
@@ -4524,13 +4770,25 @@ function App() {
 
           <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
 
-          <MiddlegamePlanPanel plan={middlegamePlanTraining} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+          <MiddlegamePlanPanel
+            plan={middlegamePlanTraining}
+            evaluationSide={middlegamePlanEvaluationSide}
+            onEvaluationSideChange={setMiddlegamePlanEvaluationSide}
+            onSelectMove={(index) => updatePositionIndex(index + 1)}
+          />
 
-          <EndgameTrainingPanel plan={endgameTrainingPlan} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+          <EndgameTrainingPanel
+            plan={endgameTrainingPlan}
+            evaluationSide={endgameTrainingEvaluationSide}
+            onEvaluationSideChange={setEndgameTrainingEvaluationSide}
+            onSelectMove={(index) => updatePositionIndex(index + 1)}
+          />
 
           <ReviewReportPanel
             report={reviewReport}
             naturalLanguageCoach={naturalLanguageCoach}
+            evaluationSide={reviewReportEvaluationSide}
+            onEvaluationSideChange={setReviewReportEvaluationSide}
             onCopy={copyReviewReport}
             onCopyCoach={copyNaturalLanguageCoachReport}
             onExport={exportReviewReport}
@@ -4552,7 +4810,14 @@ function App() {
             onDelete={deleteReviewReportHistoryItem}
           />
 
-          <StrengthProfilePanel profile={strengthProfile} historyStats={reviewReportHistoryStats} />
+          <StrengthProfilePanel
+            profile={strengthProfile}
+            historyStats={reviewReportHistoryStats}
+            evaluationSide={evaluationSide}
+            onEvaluationSideChange={setEvaluationSide}
+            range={strengthProfileRange}
+            onRangeChange={setStrengthProfileRange}
+          />
 
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
@@ -4997,6 +5262,37 @@ function PromotionDialog({
         </button>
       </div>
     </div>
+  );
+}
+
+function EvaluationSidePanel({
+  side,
+  onSideChange,
+}: {
+  side: EvaluationSide;
+  onSideChange: (side: EvaluationSide) => void;
+}) {
+  const options: EvaluationSide[] = ['white', 'black', 'both'];
+
+  return (
+    <section className="evaluation-side-panel" aria-label="全局评价方">
+      <div className="section-heading">
+        <span>全局评价方</span>
+        <small>所有分析、报告、训练模块统一使用的被评价方上下文</small>
+      </div>
+      <div className="segmented-control">
+        {options.map((option) => (
+          <button
+            type="button"
+            key={option}
+            className={side === option ? 'active' : ''}
+            onClick={() => onSideChange(option)}
+          >
+            {getEvaluationSideLabel(option)}
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -5565,11 +5861,44 @@ function GlobalAnalysisPanel({
   );
 }
 
+function EvaluationSideSwitch({
+  label,
+  side,
+  onChange,
+}: {
+  label: string;
+  side: EvaluationSide;
+  onChange: (side: EvaluationSide) => void;
+}) {
+  const options: EvaluationSide[] = ['white', 'black', 'both'];
+
+  return (
+    <div className="evaluation-side-switch" role="group" aria-label={label}>
+      <span>{label}</span>
+      {options.map((option) => (
+        <button
+          type="button"
+          key={option}
+          className={side === option ? 'active' : ''}
+          aria-pressed={side === option}
+          onClick={() => onChange(option)}
+        >
+          {getEvaluationSideLabel(option)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function MiddlegamePlanPanel({
   plan,
+  evaluationSide,
+  onEvaluationSideChange,
   onSelectMove,
 }: {
   plan: MiddlegamePlanTraining;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
   onSelectMove: (moveIndex: number) => void;
 }) {
   return (
@@ -5578,6 +5907,7 @@ function MiddlegamePlanPanel({
         <span>中局计划训练</span>
         <strong>{plan.focusCards.length}</strong>
       </div>
+      <EvaluationSideSwitch label="中局训练评价方" side={evaluationSide} onChange={onEvaluationSideChange} />
       <p>{plan.summary}</p>
 
       {plan.themeStats.length > 0 && (
@@ -5617,9 +5947,13 @@ function MiddlegamePlanPanel({
 
 function EndgameTrainingPanel({
   plan,
+  evaluationSide,
+  onEvaluationSideChange,
   onSelectMove,
 }: {
   plan: EndgameTrainingPlan;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
   onSelectMove: (moveIndex: number) => void;
 }) {
   return (
@@ -5628,6 +5962,7 @@ function EndgameTrainingPanel({
         <span>残局训练</span>
         <strong>{plan.type}</strong>
       </div>
+      <EvaluationSideSwitch label="残局训练评价方" side={evaluationSide} onChange={onEvaluationSideChange} />
       <p>{plan.summary}</p>
 
       {plan.themes.length > 0 && (
@@ -5652,7 +5987,9 @@ function EndgameTrainingPanel({
               </span>
               <strong>{card.endgameType}</strong>
               <p>{card.prompt}</p>
-              <small>训练标签：{card.tags.join(' / ')}</small>
+              <small>
+                训练标签：{card.tags.join(' / ')} · 走棋方：{card.moverLabel} · 评价方：{card.evaluatedSideLabel}
+              </small>
             </button>
           ))}
         </div>
@@ -5663,13 +6000,61 @@ function EndgameTrainingPanel({
   );
 }
 
-function StrengthProfilePanel({ profile, historyStats }: { profile: StrengthProfile; historyStats: ReviewReportHistoryStats }) {
+function StrengthProfilePanel({
+  profile,
+  historyStats,
+  evaluationSide,
+  onEvaluationSideChange,
+  range,
+  onRangeChange,
+}: {
+  profile: StrengthProfile;
+  historyStats: ReviewReportHistoryStats;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
+  range: StrengthProfileRange;
+  onRangeChange: (range: StrengthProfileRange) => void;
+}) {
+  const sideOptions: EvaluationSide[] = ['white', 'black', 'both'];
+  const rangeOptions: StrengthProfileRange[] = ['current', 'recent-5', 'recent-20', 'all'];
+
   return (
     <section className="strength-profile-panel" aria-label="个人棋力画像">
       <div className="strength-profile-header">
         <span>个人棋力画像</span>
         <strong>{profile.weakAreas.length || '待分析'}</strong>
       </div>
+      <div className="strength-profile-side-switch" aria-label="棋力画像评价方">
+        <span>评价方</span>
+        <div className="segmented-control">
+          {sideOptions.map((option) => (
+            <button
+              type="button"
+              key={option}
+              className={evaluationSide === option ? 'active' : ''}
+              onClick={() => onEvaluationSideChange(option)}
+            >
+              {getEvaluationSideLabel(option)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="strength-profile-side-switch" aria-label="棋力画像统计范围">
+        <span>统计范围</span>
+        <div className="segmented-control">
+          {rangeOptions.map((option) => (
+            <button
+              type="button"
+              key={option}
+              className={range === option ? 'active' : ''}
+              onClick={() => onRangeChange(option)}
+            >
+              {getStrengthProfileRangeLabel(option)}
+            </button>
+          ))}
+        </div>
+      </div>
+      {profile.sampleInfo && <p className="strength-history-summary">样本：{profile.sampleInfo.rangeLabel}，{profile.sampleInfo.gameCount} 局</p>}
       <p>{profile.summary}</p>
       <p className="strength-history-summary">{historyStats.summary}</p>
 
@@ -5724,6 +6109,8 @@ function StrengthProfilePanel({ profile, historyStats }: { profile: StrengthProf
 function ReviewReportPanel({
   report,
   naturalLanguageCoach,
+  evaluationSide,
+  onEvaluationSideChange,
   onCopy,
   onCopyCoach,
   onExport,
@@ -5732,6 +6119,8 @@ function ReviewReportPanel({
 }: {
   report: ReviewReport;
   naturalLanguageCoach: NaturalLanguageCoachReport;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
   onCopy: () => void;
   onCopyCoach: () => void;
   onExport: () => void;
@@ -5746,6 +6135,7 @@ function ReviewReportPanel({
           <p>{report.summary}</p>
         </div>
         <div className="review-report-actions">
+          <EvaluationSideSwitch label="复盘报告评价方" side={evaluationSide} onChange={onEvaluationSideChange} />
           <button type="button" onClick={onSave}>
             保存到历史
           </button>
@@ -5787,6 +6177,7 @@ function ReviewReportPanel({
           <div>
             <strong>自然语言教练</strong>
             <p>{naturalLanguageCoach.summary}</p>
+            <small>当前筛选：{naturalLanguageCoach.filterLabel}</small>
           </div>
           <div className="natural-language-coach-actions">
             <button type="button" onClick={onCopyCoach}>
@@ -6247,10 +6638,14 @@ export {
   buildNaturalLanguagePositionExplanation,
   buildPracticeThemeRecommendations,
   buildReviewReportHistoryStats,
+  normalizeReviewReportHistoryItem,
   createReviewReportHistoryItem,
   filterReviewReportHistory,
   toggleReviewReportHistoryFavorite,
   buildStrengthProfile,
+  buildStrengthProfileGameSnapshot,
+  selectStrengthProfileSnapshots,
+  buildStrengthProfileSnapshotsFromHistory,
   buildBulkPgnLibraryInsights,
   buildCandidateMultiPvComparison,
   buildGlobalAnalysisCacheKey,
@@ -6259,6 +6654,10 @@ export {
   buildGlobalAnalysisPartialReport,
   buildGlobalAnalysisReport,
   buildGlobalAnalysisPerspectiveLabel,
+  evaluationSideToColor,
+  filterAnalysesByEvaluationSide,
+  filterKeyAnalysesByEvaluationSide,
+  getEvaluationSideLabel,
   buildKeyMomentSummary,
   buildMiddlegamePlanTraining,
   classifyKeyAnalysisMoment,
