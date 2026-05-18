@@ -191,6 +191,46 @@ describe('candidate move training helpers', () => {
     expect(result.summary).toContain('评价方：棋盘下方（黑方）');
   });
 
+  it('threads black move board perspective through candidate training result summaries', () => {
+    const result = analyzeCandidateMoveTraining({
+      rawCandidates: 'Nf6 - 开发并攻击 e4\nBc5 - 施压 f2\nd6 - 稳固中心',
+      selectedSan: 'Bc5',
+      actualSan: 'Nf6',
+      stockfishBestSan: 'Nf6',
+      moveColor: 'b',
+      perspective: 'board',
+      boardFlipped: false,
+      multiPvLines: [
+        {
+          rank: 1,
+          score: { type: 'cp', value: -45 },
+          pv: ['Nf6', 'Nc3'],
+          uci: ['g8f6', 'b1c3'],
+          firstMoveSan: 'Nf6',
+          displayScore: '-0.45',
+        },
+        {
+          rank: 2,
+          score: { type: 'cp', value: -20 },
+          pv: ['Bc5', 'c3'],
+          uci: ['f8c5', 'c2c3'],
+          firstMoveSan: 'Bc5',
+          displayScore: '-0.20',
+        },
+      ],
+    });
+
+    expect(result.multiPvComparison.rows[1]).toMatchObject({
+      moveSan: 'Bc5',
+      perspectiveLabel: '棋盘视角（白方在下）',
+      evaluatedSideLabel: '棋盘下方（白方）',
+      moverLabel: '黑方',
+    });
+    expect(result.multiPvComparison.summary).toContain('评价方：棋盘下方（白方）');
+    expect(result.multiPvComparison.summary).toContain('走棋方：黑方');
+    expect(result.summary).toContain('棋盘视角（白方在下）');
+  });
+
   it('marks candidates that miss all MultiPV lines and degrades when MultiPV is unavailable', () => {
     const missed = buildCandidateMultiPvComparison({
       rawCandidates: 'h4 - 制造王翼空间\nNf3 - 正常开发',
@@ -883,6 +923,13 @@ describe('analysis controls, cache, and key moment helpers', () => {
       classification: '败着',
       centipawnLoss: 360,
     });
+    const boardPerspectiveWhiteBottomBlackMover = buildGlobalAnalysisPerspectiveLabel({
+      moveColor: 'b',
+      perspective: 'board',
+      boardFlipped: false,
+      classification: '疑问手',
+      centipawnLoss: 90,
+    });
 
     expect(whiteGood).toMatchObject({
       perspectiveLabel: '白方视角',
@@ -906,6 +953,13 @@ describe('analysis controls, cache, and key moment helpers', () => {
     expect(boardPerspective.summary).not.toContain('本步走棋方（黑方）');
     expect(boardPerspective.summary).not.toContain('我方');
     expect(boardPerspective.summary).not.toContain('用户');
+    expect(boardPerspectiveWhiteBottomBlackMover).toMatchObject({
+      perspectiveLabel: '棋盘视角（白方在下）',
+      evaluatedSideLabel: '棋盘下方（白方）',
+      moverLabel: '黑方',
+    });
+    expect(boardPerspectiveWhiteBottomBlackMover.summary).toContain('评价方：棋盘下方（白方）');
+    expect(boardPerspectiveWhiteBottomBlackMover.summary).toContain('走棋方：黑方');
   });
 
   it('builds report rows with multipv lines and filters key training moments', () => {

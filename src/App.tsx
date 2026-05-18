@@ -1097,15 +1097,16 @@ function buildGlobalAnalysisPerspectiveLabel({
   centipawnLoss: number;
 }): GlobalAnalysisPerspectiveLabel {
   const moverLabel = getColorLabel(moveColor);
+  const boardSideLabel = boardFlipped ? '黑方' : '白方';
   const perspectiveLabel = perspective === 'white'
     ? '白方视角'
     : perspective === 'sideToMove'
       ? '本步走棋方视角'
-      : `棋盘视角（${boardFlipped ? '黑方' : '白方'}在下）`;
+      : `棋盘视角（${boardSideLabel}在下）`;
   const evaluatedSideLabel = perspective === 'white'
     ? '白方'
     : perspective === 'board'
-      ? `棋盘${boardFlipped ? '下方' : '上方'}（${moverLabel}）`
+      ? `棋盘下方（${boardSideLabel}）`
       : moverLabel;
 
   return {
@@ -2633,12 +2634,18 @@ function analyzeCandidateMoveTraining({
   actualSan,
   stockfishBestSan,
   multiPvLines = [],
+  moveColor,
+  perspective = 'sideToMove',
+  boardFlipped = false,
 }: {
   rawCandidates: string;
   selectedSan: string;
   actualSan: string;
   stockfishBestSan: string;
   multiPvLines?: MultiPvLine[];
+  moveColor?: Color;
+  perspective?: EvaluationPerspective;
+  boardFlipped?: boolean;
 }): CandidateMoveTrainingResult {
   const entries = parseCandidateMoveEntries(rawCandidates);
   const candidateCount = entries.length;
@@ -2663,6 +2670,9 @@ function analyzeCandidateMoveTraining({
     actualSan,
     stockfishBestSan,
     multiPvLines,
+    moveColor,
+    perspective,
+    boardFlipped,
   });
   const summary = isValid
     ? [
@@ -3724,6 +3734,9 @@ function App() {
           actualSan: nextOriginalMove.san,
           stockfishBestSan: analysis?.bestMoveSan ?? '',
           multiPvLines: analysis?.multiPvLines ?? [],
+          moveColor: nextOriginalMove.color,
+          perspective: evaluationPerspective,
+          boardFlipped: isBoardFlipped,
         })
       : null;
     setGuessResult(guessAnalysis);
