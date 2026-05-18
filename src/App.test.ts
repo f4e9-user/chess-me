@@ -903,10 +903,65 @@ describe('natural language coach helpers', () => {
       history: [],
     });
 
-    expect(coach.summary).toContain('自然语言教练生成 1 个局面解释');
+    expect(coach.summary).toContain('自然语言教练按「关键时刻」生成 1 个局面解释');
     expect(coach.positionExplanations[0].markdown).toContain('10... g5');
     expect(coach.markdown).toContain('# 自然语言教练解释');
+    expect(coach.markdown).toContain('筛选：关键时刻');
     expect(coach.markdown).toContain('## 推荐练习主题');
+  });
+
+  it('filters coach explanations by all/key/side combinations without attributing opponent mistakes', () => {
+    const whiteMistake = {
+      ...blunderAnalysis,
+      moveIndex: 14,
+      label: '8. Qh5',
+      san: 'Qh5',
+      moveColor: 'w' as const,
+      quality: '失误' as const,
+      centipawnLoss: 180,
+      beforeScore: 220,
+      afterScore: 40,
+      isSwingPoint: false,
+      bestMoveSan: 'Nc3',
+      primaryPv: ['Nc3', 'Nf6'],
+      multiPvLines: [
+        { rank: 1, score: { type: 'cp' as const, value: 220 }, pv: ['Nc3', 'Nf6'], uci: ['b1c3'], firstMoveSan: 'Nc3', displayScore: '+2.20' },
+      ],
+    };
+    const quietBlackMove = {
+      ...blunderAnalysis,
+      moveIndex: 5,
+      label: '3... a6',
+      san: 'a6',
+      moveColor: 'b' as const,
+      quality: '好棋' as const,
+      centipawnLoss: 10,
+      beforeScore: 20,
+      afterScore: 15,
+      isSwingPoint: false,
+      bestMoveSan: 'a6',
+      primaryPv: ['a6', 'Ba4'],
+      multiPvLines: [
+        { rank: 1, score: { type: 'cp' as const, value: 20 }, pv: ['a6', 'Ba4'], uci: ['a7a6'], firstMoveSan: 'a6', displayScore: '+0.20' },
+      ],
+    };
+
+    const analyses = [blunderAnalysis, whiteMistake, quietBlackMove];
+    const whiteKeyCoach = buildNaturalLanguageCoachReport({ analyses, momentFilter: 'key-white' });
+    const blackKeyCoach = buildNaturalLanguageCoachReport({ analyses, momentFilter: 'key-black' });
+    const blackAllCoach = buildNaturalLanguageCoachReport({ analyses, momentFilter: 'black' });
+
+    expect(whiteKeyCoach.positionExplanations.map((item) => item.moveLabel)).toEqual(['8. Qh5']);
+    expect(whiteKeyCoach.markdown).toContain('8. Qh5');
+    expect(whiteKeyCoach.markdown).toContain('筛选：白棋关键');
+    expect(whiteKeyCoach.markdown).not.toContain('10... g5');
+
+    expect(blackKeyCoach.positionExplanations.map((item) => item.moveLabel)).toEqual(['10... g5']);
+    expect(blackKeyCoach.markdown).toContain('筛选：黑棋关键');
+    expect(blackKeyCoach.markdown).not.toContain('8. Qh5');
+
+    expect(blackAllCoach.positionExplanations.map((item) => item.moveLabel)).toEqual(['10... g5', '3... a6']);
+    expect(blackAllCoach.markdown).toContain('筛选：黑棋行动');
   });
 });
 

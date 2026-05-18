@@ -439,6 +439,7 @@ type NaturalLanguagePositionExplanation = {
 
 type NaturalLanguageCoachReport = {
   summary: string;
+  filterLabel: string;
   positionExplanations: NaturalLanguagePositionExplanation[];
   practiceThemes: NaturalLanguagePracticeTheme[];
   markdown: string;
@@ -1246,6 +1247,18 @@ function filterGlobalAnalysisMoments(analyses: GlobalMoveAnalysis[], filter: Glo
     const matchesMoment = !keyOnly || classifyKeyAnalysisMoment(item).isKeyMoment;
     return matchesColor && matchesMoment;
   });
+}
+
+function getGlobalAnalysisMomentFilterLabel(filter: GlobalAnalysisMomentFilter) {
+  const labels: Record<GlobalAnalysisMomentFilter, string> = {
+    all: '全部',
+    key: '关键时刻',
+    white: '白棋行动',
+    black: '黑棋行动',
+    'key-white': '白棋关键',
+    'key-black': '黑棋关键',
+  };
+  return labels[filter];
 }
 
 type GlobalAnalysisPlayerSummary = {
@@ -2219,22 +2232,27 @@ function buildNaturalLanguageCoachReport({
   reviewReport,
   candidateStats,
   history = [],
+  momentFilter = 'key',
 }: {
   analyses: GlobalMoveAnalysis[];
   reviewReport?: Pick<ReviewReport, 'summary' | 'trainingAdvice'> | { summary?: string; trainingAdvice?: string } | null;
   candidateStats?: CandidateTrainingStats | null;
   history?: Array<Pick<ReviewReportHistoryItem, 'trainingAdvice' | 'keyMoments'> | { trainingAdvice?: string; keyMoments?: Array<Partial<ReviewReportHistoryKeyMoment>> }>;
+  momentFilter?: GlobalAnalysisMomentFilter;
 }): NaturalLanguageCoachReport {
-  const focusAnalyses = filterGlobalAnalysisMoments(analyses, 'key')
+  const filterLabel = getGlobalAnalysisMomentFilterLabel(momentFilter);
+  const focusAnalyses = filterGlobalAnalysisMoments(analyses, momentFilter)
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
     .slice(0, 3);
   const positionExplanations = focusAnalyses.map((analysis) => buildNaturalLanguagePositionExplanation({ analysis, reviewReport }));
   const practiceThemes = buildPracticeThemeRecommendations({ reviewReport, candidateStats, history });
   const summary = positionExplanations.length
-    ? `自然语言教练生成 ${positionExplanations.length} 个局面解释，首要练习主题：${practiceThemes[0]?.theme ?? '候选着法与风险控制'}。`
-    : `自然语言教练暂未发现关键失误，建议保持${practiceThemes[0]?.theme ?? '候选着法与风险控制'}训练。`;
+    ? `自然语言教练按「${filterLabel}」生成 ${positionExplanations.length} 个局面解释，首要练习主题：${practiceThemes[0]?.theme ?? '候选着法与风险控制'}。`
+    : `自然语言教练按「${filterLabel}」暂未发现关键失误，建议保持${practiceThemes[0]?.theme ?? '候选着法与风险控制'}训练。`;
   const markdown = [
     '# 自然语言教练解释',
+    '',
+    `筛选：${filterLabel}`,
     '',
     `## 总览\n${summary}`,
     '',
@@ -2247,6 +2265,7 @@ function buildNaturalLanguageCoachReport({
 
   return {
     summary,
+    filterLabel,
     positionExplanations,
     practiceThemes,
     markdown,
@@ -3448,8 +3467,9 @@ function App() {
       reviewReport,
       candidateStats,
       history: reviewReportHistory,
+      momentFilter: globalAnalysisFilter,
     }),
-    [candidateStats, globalAnalysis, reviewReport, reviewReportHistory],
+    [candidateStats, globalAnalysis, globalAnalysisFilter, reviewReport, reviewReportHistory],
   );
   const filteredBulkPgnGames = useMemo(
     () => (bulkPgnLibrary ? filterBulkPgnLibraryGames(bulkPgnLibrary.games, bulkPgnFilters) : []),
@@ -5857,6 +5877,7 @@ function ReviewReportPanel({
           <div>
             <strong>自然语言教练</strong>
             <p>{naturalLanguageCoach.summary}</p>
+            <small>当前筛选：{naturalLanguageCoach.filterLabel}</small>
           </div>
           <div className="natural-language-coach-actions">
             <button type="button" onClick={onCopyCoach}>
