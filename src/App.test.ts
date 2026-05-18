@@ -15,6 +15,8 @@ import {
   buildNaturalLanguagePositionExplanation,
   buildPracticeThemeRecommendations,
   buildStrengthProfile,
+  buildStrengthProfileGameSnapshot,
+  selectStrengthProfileSnapshots,
   buildBulkPgnLibraryInsights,
   filterBulkPgnLibraryGames,
   parseBulkPgnLibrary,
@@ -555,27 +557,43 @@ describe('strength profile helpers', () => {
     expect(profile.summary).toContain('首要短板');
   });
 
-  it('uses explicit white, black, and both evaluation sides for current-game profile stats', () => {
-    const analyses = [
-      { moveIndex: 10, label: '6. Bc4', san: 'Bc4', moveColor: 'w' as const, quality: '疑问手' as const, centipawnLoss: 60, beforeScore: 30, afterScore: -30, isSwingPoint: false, bestMoveSan: 'Be2', multiPvLines: [] },
-      { moveIndex: 11, label: '6... Qh4', san: 'Qh4', moveColor: 'b' as const, quality: '败着' as const, centipawnLoss: 420, beforeScore: -30, afterScore: 390, isSwingPoint: true, bestMoveSan: 'Nf6', multiPvLines: [] },
-      { moveIndex: 12, label: '7. Nf3', san: 'Nf3', moveColor: 'w' as const, quality: '失误' as const, centipawnLoss: 140, beforeScore: 390, afterScore: 250, isSwingPoint: true, bestMoveSan: 'Qe2', multiPvLines: [] },
-      { moveIndex: 13, label: '7... Nc6', san: 'Nc6', moveColor: 'b' as const, quality: '疑问手' as const, centipawnLoss: 80, beforeScore: 250, afterScore: 330, isSwingPoint: false, bestMoveSan: 'Nf6', multiPvLines: [] },
-    ];
+  it('aggregates strength profile snapshots across games, ranges them, and still isolates evaluated side', () => {
+    const gameOne = buildStrengthProfileGameSnapshot({
+      id: 'game-1',
+      title: 'Training game 1',
+      importedAt: '2026-05-01T00:00:00.000Z',
+      analyses: [
+        { moveIndex: 10, label: '6. Bc4', san: 'Bc4', moveColor: 'w' as const, quality: '失误' as const, centipawnLoss: 120, beforeScore: 40, afterScore: -80, isSwingPoint: true, bestMoveSan: 'Be2', multiPvLines: [] },
+        { moveIndex: 11, label: '6... Qh4', san: 'Qh4', moveColor: 'b' as const, quality: '败着' as const, centipawnLoss: 400, beforeScore: -80, afterScore: 320, isSwingPoint: true, bestMoveSan: 'Nf6', multiPvLines: [] },
+      ],
+    });
+    const gameTwo = buildStrengthProfileGameSnapshot({
+      id: 'game-2',
+      title: 'Training game 2',
+      importedAt: '2026-05-02T00:00:00.000Z',
+      analyses: [
+        { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', moveColor: 'w' as const, quality: '疑问手' as const, centipawnLoss: 80, beforeScore: 30, afterScore: -50, isSwingPoint: false, bestMoveSan: 'Re1', multiPvLines: [] },
+        { moveIndex: 17, label: '9... Nd4', san: 'Nd4', moveColor: 'b' as const, quality: '失误' as const, centipawnLoss: 100, beforeScore: -50, afterScore: 50, isSwingPoint: false, bestMoveSan: 'Nf6', multiPvLines: [] },
+      ],
+    });
+
+    const allSnapshots = selectStrengthProfileSnapshots([gameOne, gameTwo], 'all');
+    const recentOne = selectStrengthProfileSnapshots([gameOne, gameTwo], 'recent-1');
     const emptyStats = { sessions: 0, validSessions: 0, answerCovered: 0, bestCovered: 0, answerInCandidatesButNotSelected: 0, sortingScoreTotal: 0 };
 
-    const whiteProfile = buildStrengthProfile({ analyses, evaluationSide: 'white', mistakeCards: [], candidateStats: emptyStats });
-    const blackProfile = buildStrengthProfile({ analyses, evaluationSide: 'black', mistakeCards: [], candidateStats: emptyStats });
-    const bothProfile = buildStrengthProfile({ analyses, evaluationSide: 'both', mistakeCards: [], candidateStats: emptyStats });
+    const whiteAllProfile = buildStrengthProfile({ snapshots: allSnapshots, evaluationSide: 'white', mistakeCards: [], candidateStats: emptyStats });
+    const blackAllProfile = buildStrengthProfile({ snapshots: allSnapshots, evaluationSide: 'black', mistakeCards: [], candidateStats: emptyStats });
+    const bothAllProfile = buildStrengthProfile({ snapshots: allSnapshots, evaluationSide: 'both', mistakeCards: [], candidateStats: emptyStats });
+    const whiteRecentProfile = buildStrengthProfile({ snapshots: recentOne, evaluationSide: 'white', rangeLabel: '最近 1 局', mistakeCards: [], candidateStats: emptyStats });
 
-    expect(whiteProfile.summary).toContain('白方棋力画像');
-    expect(blackProfile.summary).toContain('黑方棋力画像');
-    expect(bothProfile.summary).toContain('双方棋力画像');
-    expect(whiteProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(200);
-    expect(blackProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(500);
-    expect(bothProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(700);
-    expect(whiteProfile.weakAreas.join(' ')).not.toContain('500');
-    expect(blackProfile.weakAreas.join(' ')).not.toContain('200');
+    expect(gameOne.perColor.white.totalLoss).toBe(120);
+    expect(gameOne.perColor.black.totalLoss).toBe(400);
+    expect(whiteAllProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(200);
+    expect(blackAllProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(500);
+    expect(bothAllProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(700);
+    expect(whiteRecentProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(80);
+    expect(whiteAllProfile.summary).toContain('2 局累计');
+    expect(whiteRecentProfile.summary).toContain('最近 1 局');
   });
 });
 
@@ -626,7 +644,7 @@ describe('review report helpers', () => {
       },
       endgamePlan: {
         phase: 'endgame', type: '车残局',
-        cards: [{ id: 'end-46', moveIndex: 46, label: '24... Ke1', san: 'Ke1', endgameType: '车残局', missedChance: '错过守和机会', recommendedMove: 'Kd1', prompt: '复盘残局守和。', tags: ['残局', '车残局'] }],
+        cards: [{ id: 'end-46', moveIndex: 46, label: '24... Ke1', san: 'Ke1', endgameType: '车残局', missedChance: '错过守和机会', recommendedMove: 'Kd1', prompt: '复盘残局守和。', tags: ['残局', '车残局'], moverLabel: '黑方', evaluatedSideLabel: '白方' }],
         themes: ['王的积极性'], summary: '识别到车残局。',
       },
       evaluatedColor: 'w',
@@ -664,7 +682,7 @@ describe('review report history helpers', () => {
     },
     endgamePlan: {
       phase: 'endgame', type: '车残局',
-      cards: [{ id: 'end-46', moveIndex: 46, label: '24... Ke1', san: 'Ke1', endgameType: '车残局', missedChance: '错过守和机会', recommendedMove: 'Kd1', prompt: '复盘残局守和。', tags: ['残局', '车残局'] }],
+      cards: [{ id: 'end-46', moveIndex: 46, label: '24... Ke1', san: 'Ke1', endgameType: '车残局', missedChance: '错过守和机会', recommendedMove: 'Kd1', prompt: '复盘残局守和。', tags: ['残局', '车残局'], moverLabel: '黑方', evaluatedSideLabel: '白方' }],
       themes: ['王的积极性'], summary: '识别到车残局。',
     },
   });
@@ -732,6 +750,35 @@ describe('review report history helpers', () => {
   });
 });
 describe('endgame training helpers', () => {
+  it('filters endgame cards by explicit evaluation side and labels the mover', () => {
+    const positions = [
+      { fen: '8/8/8/8/8/8/4K3/4k3 w - - 0 1', label: '1. Kd2' },
+      { fen: '8/8/8/8/8/8/4K3/R3k3 b - - 0 1', label: '1... Ke1' },
+      { fen: '8/8/8/8/8/8/4K3/R3k3 w - - 0 2', label: '2. Ra8' },
+      { fen: '8/8/8/8/8/8/4K3/R3k3 b - - 0 2', label: '2... Kd1' },
+    ];
+    const analyses = [
+      { moveIndex: 1, label: '1... Ke1', san: 'Ke1', moveColor: 'b' as const, quality: '失误' as const, centipawnLoss: 180, beforeScore: 0, afterScore: 260, isSwingPoint: true, bestMoveSan: 'Kd1', multiPvLines: [] },
+      { moveIndex: 2, label: '2. Ra8', san: 'Ra8', moveColor: 'w' as const, quality: '败着' as const, centipawnLoss: 420, beforeScore: 260, afterScore: -160, isSwingPoint: true, bestMoveSan: 'Kd2', multiPvLines: [] },
+    ];
+
+    const whitePlan = buildEndgameTrainingPlan({ positions, analyses, evaluationSide: 'white' });
+    const blackPlan = buildEndgameTrainingPlan({ positions, analyses, evaluationSide: 'black' });
+    const bothPlan = buildEndgameTrainingPlan({ positions, analyses, evaluationSide: 'both' });
+
+    expect(whitePlan.cards.map((card) => card.label)).toEqual(['2. Ra8']);
+    expect(whitePlan.summary).toContain('被评价方：白方');
+    expect(whitePlan.cards[0].prompt).toContain('走棋方：白方');
+    expect(whitePlan.cards[0].prompt).not.toContain('1... Ke1');
+
+    expect(blackPlan.cards.map((card) => card.label)).toEqual(['1... Ke1']);
+    expect(blackPlan.summary).toContain('被评价方：黑方');
+    expect(blackPlan.cards[0].prompt).toContain('走棋方：黑方');
+
+    expect(bothPlan.cards.map((card) => card.label)).toEqual(['2. Ra8', '1... Ke1']);
+    expect(bothPlan.summary).toContain('被评价方：双方');
+  });
+
   it('detects endgame phase, classifies type, and generates training cards from late mistakes', () => {
     const plan = buildEndgameTrainingPlan({
       positions: [

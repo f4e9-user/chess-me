@@ -29,6 +29,7 @@ type ParseResult = {
   moves: Move[];
   error?: string;
   source: ReplayMode;
+  headers: Record<string, string>;
 };
 
 type BulkPgnSource = 'lichess' | 'chess.com' | 'manual' | 'unknown';
@@ -389,6 +390,8 @@ type EndgameTrainingCard = {
   moveIndex: number;
   label: string;
   san: string;
+  moverLabel: string;
+  evaluatedSideLabel: string;
   endgameType: EndgameType;
   missedChance: string;
   recommendedMove: string;
@@ -464,6 +467,7 @@ type ReviewReportHistoryItem = {
   summary: string;
   analysisSummary: string;
   keyMoments: ReviewReportHistoryKeyMoment[];
+  strengthProfileAnalyses?: GlobalMoveAnalysis[];
   trainingAdvice: string;
   markdown: string;
   isFavorite: boolean;
@@ -501,6 +505,28 @@ type StrengthRadarAxis = {
   note: string;
 };
 
+type StrengthProfileRange = 'current' | 'recent-1' | 'recent-5' | 'recent-20' | 'all';
+
+type StrengthProfileColorStats = {
+  totalMoves: number;
+  keyMoments: number;
+  totalLoss: number;
+  mistakeCount: number;
+};
+
+type StrengthProfileGameSnapshot = {
+  id: string;
+  title: string;
+  importedAt: string;
+  analyses: GlobalMoveAnalysis[];
+  perColor: Record<'white' | 'black', StrengthProfileColorStats>;
+};
+
+type StrengthProfileSampleInfo = {
+  gameCount: number;
+  rangeLabel: string;
+};
+
 type StrengthProfile = {
   summary: string;
   phaseBreakdown: StrengthPhaseBreakdown[];
@@ -508,6 +534,7 @@ type StrengthProfile = {
   weakAreas: string[];
   trainingPriorities: string[];
   radarAxes: StrengthRadarAxis[];
+  sampleInfo?: StrengthProfileSampleInfo;
 };
 
 const initialPgn = `[Event "Training Review"]
@@ -856,6 +883,7 @@ function parsePgn(input: string): ParseResult {
       source: 'pgn',
       positions: [],
       moves: [],
+      headers: {},
       error: '请粘贴 PGN 棋谱。',
     };
   }
@@ -865,6 +893,7 @@ function parsePgn(input: string): ParseResult {
     loaded.loadPgn(trimmed);
 
     const moves = loaded.history({ verbose: true });
+    const headers = loaded.getHeaders();
     const commentsByFen = new Map(
       (loaded.getComments() as PgnComment[]).map(({ fen, comment }) => [fen, comment]),
     );
@@ -893,12 +922,13 @@ function parsePgn(input: string): ParseResult {
       });
     }
 
-    return { source: 'pgn', positions, moves };
+    return { source: 'pgn', positions, moves, headers };
   } catch (error) {
     return {
       source: 'pgn',
       positions: [],
       moves: [],
+      headers: {},
       error: error instanceof Error ? error.message : 'PGN 解析失败。',
     };
   }
@@ -915,6 +945,7 @@ function parseFen(input: string): ParseResult {
       source: 'fen',
       positions: [],
       moves: [],
+      headers: {},
       error: '请粘贴 FEN。多行 FEN 会作为局面序列复盘。',
     };
   }
@@ -934,12 +965,13 @@ function parseFen(input: string): ParseResult {
         source: 'fen',
         positions: [],
         moves: [],
+        headers: {},
         error: `第 ${index + 1} 行 FEN 解析失败：${detail}`,
       };
     }
   }
 
-  return { source: 'fen', positions, moves: [] };
+  return { source: 'fen', positions, moves: [], headers: {} };
 }
 
 function formatMoveLabel(move: Move, index: number) {
@@ -1839,10 +1871,13 @@ function classifyEndgameMissedChance(analysis: GlobalMoveAnalysis) {
 function buildEndgameTrainingPlan({
   positions,
   analyses,
+  evaluationSide = 'both',
 }: {
   positions: Array<Pick<ReplayPosition, 'fen' | 'label'>>;
   analyses: GlobalMoveAnalysis[];
+  evaluationSide?: EvaluationSide;
 }): EndgameTrainingPlan {
+  const evaluatedSideLabel = getEvaluationSideLabel(evaluationSide);
   const endgameStartIndex = positions.findIndex((position) => classifyEndgameType(position.fen) !== '非残局');
 
   if (endgameStartIndex < 0) {
@@ -1851,7 +1886,7 @@ function buildEndgameTrainingPlan({
       type: '非残局',
       cards: [],
       themes: [],
-      summary: '尚未进入残局；运行整盘分析后可继续观察后半盘。',
+      summary: `被评价方：${evaluatedSideLabel}。尚未进入残局；运行整盘分析后可继续观察后半盘。`,
     };
   }
 
@@ -1859,7 +1894,10 @@ function buildEndgameTrainingPlan({
     .slice(endgameStartIndex)
     .map((position) => classifyEndgameType(position.fen))
     .find((candidate) => candidate !== '非残局' && candidate !== '兵残局') ?? classifyEndgameType(positions[endgameStartIndex].fen);
-  const endgameAnalyses = analyses.filter((analysis) => analysis.moveIndex >= Math.max(0, endgameStartIndex - 1));
+  const endgameAnalyses = filterAnalysesByEvaluationSide(
+    analyses.filter((analysis) => analysis.moveIndex >= Math.max(0, endgameStartIndex - 1)),
+    evaluationSide,
+  );
   const cards = endgameAnalyses
     .filter((analysis) => analysis.centipawnLoss >= 80 || analysis.isSwingPoint)
     .sort((a, b) => b.centipawnLoss - a.centipawnLoss || a.moveIndex - b.moveIndex)
@@ -1871,6 +1909,8 @@ function buildEndgameTrainingPlan({
         moveIndex: analysis.moveIndex,
         label: analysis.label,
         san: analysis.san,
+        moverLabel: perspective.moverLabel,
+        evaluatedSideLabel: perspective.evaluatedSideLabel,
         endgameType: type,
         missedChance: classifyEndgameMissedChance(analysis),
         recommendedMove: analysis.bestMoveSan,
@@ -1892,8 +1932,8 @@ function buildEndgameTrainingPlan({
     cards,
     themes: [...new Set(themes)],
     summary: cards.length
-      ? `识别到${type}，生成 ${cards.length} 张残局训练卡，优先检查：${cards[0].missedChance}。`
-      : `识别到${type}，暂未发现明显残局错题；建议重点复盘王和兵的转换。`,
+      ? `被评价方：${evaluatedSideLabel}。识别到${type}，生成 ${cards.length} 张残局训练卡，优先检查：${cards[0].missedChance}。`
+      : `被评价方：${evaluatedSideLabel}。识别到${type}，暂未发现明显残局错题；建议重点复盘王和兵的转换。`,
   };
 }
 
@@ -1928,21 +1968,100 @@ function clampStrengthScore(score: number) {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+function buildStrengthProfileGameSnapshot({
+  id,
+  title,
+  importedAt,
+  analyses,
+}: {
+  id: string;
+  title: string;
+  importedAt: string;
+  analyses: GlobalMoveAnalysis[];
+}): StrengthProfileGameSnapshot {
+  const normalizedAnalyses = analyses.map((analysis) => ({
+    ...analysis,
+    moveColor: analysis.moveColor ?? (analysis.moveIndex % 2 === 1 ? 'w' : 'b'),
+  }));
+  const createEmptyStats = (): StrengthProfileColorStats => ({ totalMoves: 0, keyMoments: 0, totalLoss: 0, mistakeCount: 0 });
+  const perColor = { white: createEmptyStats(), black: createEmptyStats() };
+
+  normalizedAnalyses.forEach((analysis) => {
+    const colorKey = analysis.moveColor === 'b' ? 'black' : 'white';
+    perColor[colorKey].totalMoves += 1;
+    perColor[colorKey].totalLoss += analysis.centipawnLoss;
+    if (analysis.isSwingPoint) {
+      perColor[colorKey].keyMoments += 1;
+    }
+    if (analysis.centipawnLoss > 0) {
+      perColor[colorKey].mistakeCount += 1;
+    }
+  });
+
+  return { id, title, importedAt, analyses: normalizedAnalyses, perColor };
+}
+
+function getStrengthProfileRangeLabel(range: StrengthProfileRange) {
+  if (range === 'current') {
+    return '当前对局';
+  }
+  if (range === 'all') {
+    return '全部已保存对局';
+  }
+  return `最近 ${Number(range.replace('recent-', ''))} 局`;
+}
+
+function getStrengthProfileRangeLimit(range: StrengthProfileRange) {
+  if (range === 'current' || range === 'all') {
+    return undefined;
+  }
+  return Number(range.replace('recent-', ''));
+}
+
+function selectStrengthProfileSnapshots(
+  snapshots: StrengthProfileGameSnapshot[],
+  range: StrengthProfileRange,
+): StrengthProfileGameSnapshot[] {
+  if (range === 'current') {
+    return snapshots.slice(0, 1);
+  }
+  const sortedSnapshots = [...snapshots].sort((a, b) => b.importedAt.localeCompare(a.importedAt));
+  const limit = getStrengthProfileRangeLimit(range);
+  return typeof limit === 'number' ? sortedSnapshots.slice(0, limit) : sortedSnapshots;
+}
+
+function buildStrengthProfileSnapshotsFromHistory(history: ReviewReportHistoryItem[]): StrengthProfileGameSnapshot[] {
+  return history
+    .filter((item) => (item.strengthProfileAnalyses?.length ?? 0) > 0)
+    .map((item) => buildStrengthProfileGameSnapshot({
+      id: item.id,
+      title: item.meta.event || `${item.meta.white} vs ${item.meta.black}`,
+      importedAt: item.savedAt,
+      analyses: item.strengthProfileAnalyses ?? [],
+    }));
+}
+
 function buildStrengthProfile({
   analyses,
+  snapshots,
   mistakeCards,
   candidateStats,
   evaluationSide,
   evaluatedColor,
+  rangeLabel,
 }: {
-  analyses: GlobalMoveAnalysis[];
+  analyses?: GlobalMoveAnalysis[];
+  snapshots?: StrengthProfileGameSnapshot[];
   mistakeCards: Array<Pick<MistakeCard, 'tags' | 'attempts' | 'solvedCount'>>;
   candidateStats: CandidateTrainingStats;
   evaluationSide?: EvaluationSide;
   evaluatedColor?: Color;
+  rangeLabel?: string;
 }): StrengthProfile {
+  const snapshotAnalyses = snapshots?.flatMap((snapshot) => snapshot.analyses);
+  const sourceAnalyses = snapshotAnalyses ?? analyses ?? [];
   const resolvedEvaluationSide: EvaluationSide = evaluationSide ?? (evaluatedColor === 'w' ? 'white' : evaluatedColor === 'b' ? 'black' : 'both');
-  const perspectiveAnalyses = filterAnalysesByEvaluationSide(analyses, resolvedEvaluationSide);
+  const perspectiveAnalyses = filterAnalysesByEvaluationSide(sourceAnalyses, resolvedEvaluationSide);
   const evaluatedSideLabel = getEvaluationSideLabel(resolvedEvaluationSide);
   const relevantAnalyses = perspectiveAnalyses.filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint || analysis.centipawnLoss > 0);
   const phaseMap = new Map<StrengthPhaseBreakdown['phase'], StrengthPhaseBreakdown>([
@@ -2016,15 +2135,24 @@ function buildStrengthProfile({
     candidateStats.validSessions ? '继续做 2-3 个候选着训练，要求先覆盖实战答案再排序。' : '',
   ].filter(Boolean);
 
+  const sampleInfo = snapshots
+    ? {
+        gameCount: snapshots.length,
+        rangeLabel: rangeLabel ?? `${snapshots.length} 局累计`,
+      }
+    : undefined;
+  const samplePrefix = sampleInfo ? `｜${sampleInfo.rangeLabel} · ${sampleInfo.gameCount} 局累计` : '';
+
   return {
     summary: weakAreas.length
-      ? `${evaluatedSideLabel}棋力画像｜首要短板：${weakAreas[0]}。下一步：${trainingPriorities[0] ?? '保持每盘复盘。'}`
-      : `${evaluatedSideLabel}棋力画像｜暂无足够数据建立稳定棋力画像；建议先完成整盘分析和错题训练。`,
+      ? `${evaluatedSideLabel}棋力画像${samplePrefix}｜首要短板：${weakAreas[0]}。下一步：${trainingPriorities[0] ?? '保持每盘复盘。'}`
+      : `${evaluatedSideLabel}棋力画像${samplePrefix}｜暂无足够数据建立稳定棋力画像；建议先完成整盘分析和错题训练。`,
     phaseBreakdown,
     mistakeTypes,
     weakAreas,
     trainingPriorities,
     radarAxes,
+    sampleInfo,
   };
 }
 
@@ -2396,6 +2524,7 @@ function createReviewReportHistoryItem({
     summary: report.summary,
     analysisSummary: report.markdown,
     keyMoments,
+    strengthProfileAnalyses: analyses,
     trainingAdvice: report.trainingAdvice,
     markdown: report.markdown,
     isFavorite: false,
@@ -3360,8 +3489,10 @@ function App() {
   const [isBoardFlipped, setIsBoardFlipped] = useState(false);
   const [evaluationPerspective, setEvaluationPerspective] = useState<EvaluationPerspective>('white');
   const [evaluationSide, setEvaluationSide] = useState<EvaluationSide>('white');
+  const [strengthProfileRange, setStrengthProfileRange] = useState<StrengthProfileRange>('current');
   const [reviewReportEvaluationSide, setReviewReportEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [middlegamePlanEvaluationSide, setMiddlegamePlanEvaluationSide] = useState<EvaluationSide>(evaluationSide);
+  const [endgameTrainingEvaluationSide, setEndgameTrainingEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
   const [variationPositions, setVariationPositions] = useState<VariationPosition[]>([]);
   const [variationIndex, setVariationIndex] = useState(-1);
@@ -3464,8 +3595,8 @@ function App() {
     [globalAnalysis, middlegamePlanEvaluationSide],
   );
   const endgameTrainingPlan = useMemo(
-    () => buildEndgameTrainingPlan({ positions: result.positions, analyses: globalAnalysis }),
-    [globalAnalysis, result.positions],
+    () => buildEndgameTrainingPlan({ positions: result.positions, analyses: globalAnalysis, evaluationSide: endgameTrainingEvaluationSide }),
+    [endgameTrainingEvaluationSide, globalAnalysis, result.positions],
   );
   const reviewReport = useMemo(
     () =>
@@ -3496,14 +3627,28 @@ function App() {
     () => (bulkPgnLibrary ? buildBulkPgnLibraryInsights(filteredBulkPgnGames) : null),
     [bulkPgnLibrary, filteredBulkPgnGames],
   );
+  const strengthProfileSnapshots = useMemo(() => {
+    const currentSnapshot = buildStrengthProfileGameSnapshot({
+      id: 'current-game',
+      title: result.headers.Event ?? '当前对局',
+      importedAt: new Date(0).toISOString(),
+      analyses: globalAnalysis,
+    });
+    return [currentSnapshot, ...buildStrengthProfileSnapshotsFromHistory(reviewReportHistory)];
+  }, [globalAnalysis, result.headers.Event, reviewReportHistory]);
+  const selectedStrengthProfileSnapshots = useMemo(
+    () => selectStrengthProfileSnapshots(strengthProfileSnapshots, strengthProfileRange),
+    [strengthProfileRange, strengthProfileSnapshots],
+  );
   const strengthProfile = useMemo(
     () => buildStrengthProfile({
-      analyses: globalAnalysis,
+      snapshots: selectedStrengthProfileSnapshots,
       mistakeCards,
       candidateStats,
       evaluationSide,
+      rangeLabel: getStrengthProfileRangeLabel(strengthProfileRange),
     }),
-    [candidateStats, evaluationSide, globalAnalysis, mistakeCards],
+    [candidateStats, evaluationSide, mistakeCards, selectedStrengthProfileSnapshots, strengthProfileRange],
   );
   const filteredReviewReportHistory = useMemo(
     () => filterReviewReportHistory(reviewReportHistory, {
@@ -4607,7 +4752,12 @@ function App() {
             onSelectMove={(index) => updatePositionIndex(index + 1)}
           />
 
-          <EndgameTrainingPanel plan={endgameTrainingPlan} onSelectMove={(index) => updatePositionIndex(index + 1)} />
+          <EndgameTrainingPanel
+            plan={endgameTrainingPlan}
+            evaluationSide={endgameTrainingEvaluationSide}
+            onEvaluationSideChange={setEndgameTrainingEvaluationSide}
+            onSelectMove={(index) => updatePositionIndex(index + 1)}
+          />
 
           <ReviewReportPanel
             report={reviewReport}
@@ -4640,6 +4790,8 @@ function App() {
             historyStats={reviewReportHistoryStats}
             evaluationSide={evaluationSide}
             onEvaluationSideChange={setEvaluationSide}
+            range={strengthProfileRange}
+            onRangeChange={setStrengthProfileRange}
           />
 
           <GlobalAnalysisPanel
@@ -5770,9 +5922,13 @@ function MiddlegamePlanPanel({
 
 function EndgameTrainingPanel({
   plan,
+  evaluationSide,
+  onEvaluationSideChange,
   onSelectMove,
 }: {
   plan: EndgameTrainingPlan;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
   onSelectMove: (moveIndex: number) => void;
 }) {
   return (
@@ -5781,6 +5937,7 @@ function EndgameTrainingPanel({
         <span>残局训练</span>
         <strong>{plan.type}</strong>
       </div>
+      <EvaluationSideSwitch label="残局训练评价方" side={evaluationSide} onChange={onEvaluationSideChange} />
       <p>{plan.summary}</p>
 
       {plan.themes.length > 0 && (
@@ -5805,7 +5962,9 @@ function EndgameTrainingPanel({
               </span>
               <strong>{card.endgameType}</strong>
               <p>{card.prompt}</p>
-              <small>训练标签：{card.tags.join(' / ')}</small>
+              <small>
+                训练标签：{card.tags.join(' / ')} · 走棋方：{card.moverLabel} · 评价方：{card.evaluatedSideLabel}
+              </small>
             </button>
           ))}
         </div>
@@ -5821,13 +5980,18 @@ function StrengthProfilePanel({
   historyStats,
   evaluationSide,
   onEvaluationSideChange,
+  range,
+  onRangeChange,
 }: {
   profile: StrengthProfile;
   historyStats: ReviewReportHistoryStats;
   evaluationSide: EvaluationSide;
   onEvaluationSideChange: (side: EvaluationSide) => void;
+  range: StrengthProfileRange;
+  onRangeChange: (range: StrengthProfileRange) => void;
 }) {
   const sideOptions: EvaluationSide[] = ['white', 'black', 'both'];
+  const rangeOptions: StrengthProfileRange[] = ['current', 'recent-5', 'recent-20', 'all'];
 
   return (
     <section className="strength-profile-panel" aria-label="个人棋力画像">
@@ -5850,6 +6014,22 @@ function StrengthProfilePanel({
           ))}
         </div>
       </div>
+      <div className="strength-profile-side-switch" aria-label="棋力画像统计范围">
+        <span>统计范围</span>
+        <div className="segmented-control">
+          {rangeOptions.map((option) => (
+            <button
+              type="button"
+              key={option}
+              className={range === option ? 'active' : ''}
+              onClick={() => onRangeChange(option)}
+            >
+              {getStrengthProfileRangeLabel(option)}
+            </button>
+          ))}
+        </div>
+      </div>
+      {profile.sampleInfo && <p className="strength-history-summary">样本：{profile.sampleInfo.rangeLabel}，{profile.sampleInfo.gameCount} 局</p>}
       <p>{profile.summary}</p>
       <p className="strength-history-summary">{historyStats.summary}</p>
 
@@ -6437,6 +6617,9 @@ export {
   filterReviewReportHistory,
   toggleReviewReportHistoryFavorite,
   buildStrengthProfile,
+  buildStrengthProfileGameSnapshot,
+  selectStrengthProfileSnapshots,
+  buildStrengthProfileSnapshotsFromHistory,
   buildBulkPgnLibraryInsights,
   buildCandidateMultiPvComparison,
   buildGlobalAnalysisCacheKey,
