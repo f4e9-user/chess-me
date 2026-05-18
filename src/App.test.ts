@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   getLayoutRegionClassNames,
   getLayoutRegionProps,
+  getResponsiveLayoutConfig,
+  getResponsiveCollapseSections,
   analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildCandidateMultiPvComparison,
@@ -77,6 +79,35 @@ describe('layout shell helpers', () => {
       panelColumn: { className: 'panel-column', 'aria-label': '功能区' },
       resultsArea: { className: 'results-area', 'aria-label': '结果区' },
     });
+  });
+  it('defines responsive breakpoints that collapse the workspace to one column without hiding controls', () => {
+    expect(getResponsiveLayoutConfig()).toEqual({
+      desktop: {
+        minWidth: 981,
+        workspaceColumns: 'board-and-panel',
+        resultsPlacement: 'full-width',
+      },
+      tablet: {
+        maxWidth: 980,
+        workspaceColumns: 'single-column',
+        panelCollapse: 'stacked',
+        accessibleControls: ['orientation', 'replay', 'importExport', 'moveList', 'analysis', 'training'],
+      },
+      phone: {
+        maxWidth: 560,
+        workspaceColumns: 'single-column',
+        panelCollapse: 'compact-cards',
+        accessibleControls: ['orientation', 'replay', 'importExport', 'moveList', 'analysis', 'training'],
+      },
+    });
+  });
+
+  it('keeps narrow-screen collapse sections in accessible order for key regions', () => {
+    expect(getResponsiveCollapseSections()).toEqual([
+      { id: 'board-column', label: '棋盘区', defaultExpanded: true },
+      { id: 'panel-column', label: '功能区', defaultExpanded: true },
+      { id: 'results-area', label: '结果区', defaultExpanded: true },
+    ]);
   });
 });
 

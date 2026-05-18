@@ -25,6 +25,42 @@ function getLayoutRegionProps() {
   return layoutRegionProps;
 }
 
+const responsiveAccessibleControls = ['orientation', 'replay', 'importExport', 'moveList', 'analysis', 'training'] as const;
+
+const responsiveLayoutConfig = {
+  desktop: {
+    minWidth: 981,
+    workspaceColumns: 'board-and-panel',
+    resultsPlacement: 'full-width',
+  },
+  tablet: {
+    maxWidth: 980,
+    workspaceColumns: 'single-column',
+    panelCollapse: 'stacked',
+    accessibleControls: responsiveAccessibleControls,
+  },
+  phone: {
+    maxWidth: 560,
+    workspaceColumns: 'single-column',
+    panelCollapse: 'compact-cards',
+    accessibleControls: responsiveAccessibleControls,
+  },
+} as const;
+
+const responsiveCollapseSections = [
+  { id: layoutRegionClassNames.boardColumn, label: layoutRegionProps.boardColumn['aria-label'], defaultExpanded: true },
+  { id: layoutRegionClassNames.panelColumn, label: layoutRegionProps.panelColumn['aria-label'], defaultExpanded: true },
+  { id: layoutRegionClassNames.resultsArea, label: layoutRegionProps.resultsArea['aria-label'], defaultExpanded: true },
+] as const;
+
+function getResponsiveLayoutConfig() {
+  return responsiveLayoutConfig;
+}
+
+function getResponsiveCollapseSections() {
+  return responsiveCollapseSections;
+}
+
 type ReplayMode = 'pgn' | 'fen';
 
 type ReplayPosition = {
@@ -6657,6 +6693,8 @@ export {
   App,
   getLayoutRegionClassNames,
   getLayoutRegionProps,
+  getResponsiveLayoutConfig,
+  getResponsiveCollapseSections,
   analyzeCandidateMoveTraining,
   analyzeGuessMove,
   buildDailyTrainingPlan,
