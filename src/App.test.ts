@@ -8,6 +8,7 @@ import {
   buildOpeningImprovementPlan,
   buildReviewReport,
   buildReviewReportHistoryStats,
+  normalizeReviewReportHistoryItem,
   createReviewReportHistoryItem,
   filterReviewReportHistory,
   toggleReviewReportHistoryFavorite,
@@ -16,6 +17,7 @@ import {
   buildPracticeThemeRecommendations,
   buildStrengthProfile,
   buildStrengthProfileGameSnapshot,
+  buildStrengthProfileSnapshotsFromHistory,
   selectStrengthProfileSnapshots,
   buildBulkPgnLibraryInsights,
   filterBulkPgnLibraryGames,
@@ -717,6 +719,39 @@ describe('review report history helpers', () => {
     });
     expect(item.analysisSummary).toContain('评价方：白方');
     expect(item.trainingAdvice).toContain('白方走棋');
+  });
+
+  it('keeps persisted analyses when normalizing history and rebuilds saved-game strength profile snapshots', () => {
+    const saved = createReviewReportHistoryItem({
+      id: 'report-strength-1',
+      savedAt: '2026-05-19T09:00:00.000Z',
+      pgn: '[Event "Persisted Strength"]\n[White "Me"]\n[Black "Archive"]\n[Result "1-0"]\n\n1. e4 e5 1-0',
+      report: baseReport,
+      analyses: [
+        { moveIndex: 16, label: '9. Nxe5', san: 'Nxe5', moveColor: 'w' as const, quality: '败着' as const, centipawnLoss: 420, beforeScore: 80, afterScore: -360, isSwingPoint: true, bestMoveSan: 'Re1', multiPvLines: [] },
+        { moveIndex: 17, label: '9... Nd4', san: 'Nd4', moveColor: 'b' as const, quality: '失误' as const, centipawnLoss: 120, beforeScore: -360, afterScore: -220, isSwingPoint: false, bestMoveSan: 'Nf6', multiPvLines: [] },
+      ],
+      meta: { event: 'Persisted Strength', white: 'Me', black: 'Archive', result: '1-0' },
+    });
+
+    const normalized = normalizeReviewReportHistoryItem(JSON.parse(JSON.stringify(saved)));
+    const legacy = normalizeReviewReportHistoryItem({ ...saved, id: 'legacy-report', strengthProfileAnalyses: undefined });
+
+    expect(normalized?.strengthProfileAnalyses?.map((analysis) => analysis.label)).toEqual(['9. Nxe5', '9... Nd4']);
+    expect(legacy?.strengthProfileAnalyses).toEqual([]);
+
+    const snapshots = buildStrengthProfileSnapshotsFromHistory(normalized ? [normalized] : []);
+    const profile = buildStrengthProfile({
+      snapshots,
+      evaluationSide: 'white',
+      mistakeCards: [],
+      candidateStats: { sessions: 0, validSessions: 0, answerCovered: 0, bestCovered: 0, answerInCandidatesButNotSelected: 0, sortingScoreTotal: 0 },
+    });
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({ id: 'report-strength-1', title: 'Persisted Strength' });
+    expect(snapshots[0].analyses.map((analysis) => analysis.label)).toEqual(['9. Nxe5', '9... Nd4']);
+    expect(profile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(420);
   });
 
   it('searches, filters favorites, reopens reports, and aggregates history stats for strength profile linkage', () => {

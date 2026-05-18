@@ -2592,6 +2592,30 @@ function buildReviewReportHistoryStats(history: ReviewReportHistoryItem[]): Revi
   };
 }
 
+function normalizeReviewReportHistoryAnalyses(analyses: unknown): GlobalMoveAnalysis[] {
+  if (!Array.isArray(analyses)) {
+    return [];
+  }
+
+  return analyses.map((analysis) => {
+    const partial = analysis as Partial<GlobalMoveAnalysis>;
+    return {
+      moveIndex: Number(partial.moveIndex) || 0,
+      label: String(partial.label || ''),
+      san: String(partial.san || ''),
+      moveColor: partial.moveColor === 'w' || partial.moveColor === 'b' ? partial.moveColor : undefined,
+      quality: partial.quality === '疑问手' || partial.quality === '失误' || partial.quality === '败着' ? partial.quality : '好棋',
+      centipawnLoss: Number(partial.centipawnLoss) || 0,
+      beforeScore: typeof partial.beforeScore === 'number' ? partial.beforeScore : null,
+      afterScore: typeof partial.afterScore === 'number' ? partial.afterScore : null,
+      isSwingPoint: Boolean(partial.isSwingPoint),
+      bestMoveSan: String(partial.bestMoveSan || ''),
+      primaryPv: Array.isArray(partial.primaryPv) ? partial.primaryPv.map(String) : undefined,
+      multiPvLines: Array.isArray(partial.multiPvLines) ? partial.multiPvLines : [],
+    };
+  });
+}
+
 function normalizeReviewReportHistoryItem(item: Partial<ReviewReportHistoryItem>): ReviewReportHistoryItem | null {
   if (!item.id || !item.pgn || !item.meta || !item.summary) {
     return null;
@@ -2611,6 +2635,7 @@ function normalizeReviewReportHistoryItem(item: Partial<ReviewReportHistoryItem>
     summary: String(item.summary),
     analysisSummary: item.analysisSummary || item.markdown || '',
     keyMoments: Array.isArray(item.keyMoments) ? item.keyMoments : [],
+    strengthProfileAnalyses: normalizeReviewReportHistoryAnalyses(item.strengthProfileAnalyses),
     trainingAdvice: item.trainingAdvice || '',
     markdown: item.markdown || item.analysisSummary || '',
     isFavorite: Boolean(item.isFavorite),
@@ -6613,6 +6638,7 @@ export {
   buildNaturalLanguagePositionExplanation,
   buildPracticeThemeRecommendations,
   buildReviewReportHistoryStats,
+  normalizeReviewReportHistoryItem,
   createReviewReportHistoryItem,
   filterReviewReportHistory,
   toggleReviewReportHistoryFavorite,
