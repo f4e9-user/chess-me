@@ -554,6 +554,29 @@ describe('strength profile helpers', () => {
     );
     expect(profile.summary).toContain('首要短板');
   });
+
+  it('uses explicit white, black, and both evaluation sides for current-game profile stats', () => {
+    const analyses = [
+      { moveIndex: 10, label: '6. Bc4', san: 'Bc4', moveColor: 'w' as const, quality: '疑问手' as const, centipawnLoss: 60, beforeScore: 30, afterScore: -30, isSwingPoint: false, bestMoveSan: 'Be2', multiPvLines: [] },
+      { moveIndex: 11, label: '6... Qh4', san: 'Qh4', moveColor: 'b' as const, quality: '败着' as const, centipawnLoss: 420, beforeScore: -30, afterScore: 390, isSwingPoint: true, bestMoveSan: 'Nf6', multiPvLines: [] },
+      { moveIndex: 12, label: '7. Nf3', san: 'Nf3', moveColor: 'w' as const, quality: '失误' as const, centipawnLoss: 140, beforeScore: 390, afterScore: 250, isSwingPoint: true, bestMoveSan: 'Qe2', multiPvLines: [] },
+      { moveIndex: 13, label: '7... Nc6', san: 'Nc6', moveColor: 'b' as const, quality: '疑问手' as const, centipawnLoss: 80, beforeScore: 250, afterScore: 330, isSwingPoint: false, bestMoveSan: 'Nf6', multiPvLines: [] },
+    ];
+    const emptyStats = { sessions: 0, validSessions: 0, answerCovered: 0, bestCovered: 0, answerInCandidatesButNotSelected: 0, sortingScoreTotal: 0 };
+
+    const whiteProfile = buildStrengthProfile({ analyses, evaluationSide: 'white', mistakeCards: [], candidateStats: emptyStats });
+    const blackProfile = buildStrengthProfile({ analyses, evaluationSide: 'black', mistakeCards: [], candidateStats: emptyStats });
+    const bothProfile = buildStrengthProfile({ analyses, evaluationSide: 'both', mistakeCards: [], candidateStats: emptyStats });
+
+    expect(whiteProfile.summary).toContain('白方棋力画像');
+    expect(blackProfile.summary).toContain('黑方棋力画像');
+    expect(bothProfile.summary).toContain('双方棋力画像');
+    expect(whiteProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(200);
+    expect(blackProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(500);
+    expect(bothProfile.phaseBreakdown.reduce((sum, phase) => sum + phase.totalLoss, 0)).toBe(700);
+    expect(whiteProfile.weakAreas.join(' ')).not.toContain('500');
+    expect(blackProfile.weakAreas.join(' ')).not.toContain('200');
+  });
 });
 
 describe('review report helpers', () => {

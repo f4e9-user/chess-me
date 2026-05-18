@@ -1928,15 +1928,18 @@ function buildStrengthProfile({
   analyses,
   mistakeCards,
   candidateStats,
+  evaluationSide,
   evaluatedColor,
 }: {
   analyses: GlobalMoveAnalysis[];
   mistakeCards: Array<Pick<MistakeCard, 'tags' | 'attempts' | 'solvedCount'>>;
   candidateStats: CandidateTrainingStats;
+  evaluationSide?: EvaluationSide;
   evaluatedColor?: Color;
 }): StrengthProfile {
-  const perspectiveAnalyses = evaluatedColor ? analyses.filter((analysis) => inferMoveColorFromAnalysis(analysis) === evaluatedColor) : analyses;
-  const evaluatedSideLabel = evaluatedColor ? getColorLabel(evaluatedColor) : '双方';
+  const resolvedEvaluationSide: EvaluationSide = evaluationSide ?? (evaluatedColor === 'w' ? 'white' : evaluatedColor === 'b' ? 'black' : 'both');
+  const perspectiveAnalyses = filterAnalysesByEvaluationSide(analyses, resolvedEvaluationSide);
+  const evaluatedSideLabel = getEvaluationSideLabel(resolvedEvaluationSide);
   const relevantAnalyses = perspectiveAnalyses.filter((analysis) => analysis.quality !== '好棋' || analysis.isSwingPoint || analysis.centipawnLoss > 0);
   const phaseMap = new Map<StrengthPhaseBreakdown['phase'], StrengthPhaseBreakdown>([
     ['开局', { phase: '开局', mistakes: 0, totalLoss: 0 }],
@@ -3484,9 +3487,9 @@ function App() {
       analyses: globalAnalysis,
       mistakeCards,
       candidateStats,
-      evaluatedColor: evaluationPerspective === 'white' ? 'w' : evaluationPerspective === 'board' ? (isBoardFlipped ? 'b' : 'w') : undefined,
+      evaluationSide,
     }),
-    [candidateStats, evaluationPerspective, globalAnalysis, isBoardFlipped, mistakeCards],
+    [candidateStats, evaluationSide, globalAnalysis, mistakeCards],
   );
   const filteredReviewReportHistory = useMemo(
     () => filterReviewReportHistory(reviewReportHistory, {
@@ -4611,7 +4614,12 @@ function App() {
             onDelete={deleteReviewReportHistoryItem}
           />
 
-          <StrengthProfilePanel profile={strengthProfile} historyStats={reviewReportHistoryStats} />
+          <StrengthProfilePanel
+            profile={strengthProfile}
+            historyStats={reviewReportHistoryStats}
+            evaluationSide={evaluationSide}
+            onEvaluationSideChange={setEvaluationSide}
+          />
 
           <GlobalAnalysisPanel
             analyses={globalAnalysis}
@@ -5753,12 +5761,39 @@ function EndgameTrainingPanel({
   );
 }
 
-function StrengthProfilePanel({ profile, historyStats }: { profile: StrengthProfile; historyStats: ReviewReportHistoryStats }) {
+function StrengthProfilePanel({
+  profile,
+  historyStats,
+  evaluationSide,
+  onEvaluationSideChange,
+}: {
+  profile: StrengthProfile;
+  historyStats: ReviewReportHistoryStats;
+  evaluationSide: EvaluationSide;
+  onEvaluationSideChange: (side: EvaluationSide) => void;
+}) {
+  const sideOptions: EvaluationSide[] = ['white', 'black', 'both'];
+
   return (
     <section className="strength-profile-panel" aria-label="个人棋力画像">
       <div className="strength-profile-header">
         <span>个人棋力画像</span>
         <strong>{profile.weakAreas.length || '待分析'}</strong>
+      </div>
+      <div className="strength-profile-side-switch" aria-label="棋力画像评价方">
+        <span>评价方</span>
+        <div className="segmented-control">
+          {sideOptions.map((option) => (
+            <button
+              type="button"
+              key={option}
+              className={evaluationSide === option ? 'active' : ''}
+              onClick={() => onEvaluationSideChange(option)}
+            >
+              {getEvaluationSideLabel(option)}
+            </button>
+          ))}
+        </div>
       </div>
       <p>{profile.summary}</p>
       <p className="strength-history-summary">{historyStats.summary}</p>
