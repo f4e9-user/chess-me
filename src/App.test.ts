@@ -139,6 +139,9 @@ describe('candidate move training helpers', () => {
       selectedSan: 'Bc4',
       actualSan: 'Nf3',
       stockfishBestSan: 'Nf3',
+      moveColor: 'b',
+      perspective: 'board',
+      boardFlipped: true,
       multiPvLines: [
         {
           rank: 1,
@@ -175,9 +178,17 @@ describe('candidate move training helpers', () => {
       isSelected: true,
       scoreGapCp: 33,
       keyVariation: 'Bc4 Nf6',
+      perspectiveLabel: '棋盘视角（黑方在下）',
+      evaluatedSideLabel: '棋盘下方（黑方）',
+      moverLabel: '黑方',
     });
+    expect(result.rows[1].explanation).toContain('棋盘视角（黑方在下）');
+    expect(result.rows[1].explanation).toContain('评价方：棋盘下方（黑方）');
+    expect(result.rows[1].explanation).toContain('走棋方：黑方');
     expect(result.summary).toContain('命中 MultiPV 第 2 候选');
     expect(result.summary).toContain('与最佳线相差 33cp');
+    expect(result.summary).toContain('棋盘视角（黑方在下）');
+    expect(result.summary).toContain('评价方：棋盘下方（黑方）');
   });
 
   it('marks candidates that miss all MultiPV lines and degrades when MultiPV is unavailable', () => {
@@ -452,6 +463,11 @@ describe('review report helpers', () => {
     expect(report.sections.endgame).toContain('车残局');
     expect(report.biggestMistake).toMatchObject({ label: '9. Nxe5', centipawnLoss: 420 });
     expect(report.trainingAdvice).toContain('优先训练候选着法与风险控制');
+    expect(report.summary).toContain('白方视角');
+    expect(report.summary).toContain('评价方：白方');
+    expect(report.summary).toContain('走棋方：白方');
+    expect(report.sections.biggestMistake).toContain('损失 420 cp');
+    expect(report.trainingAdvice).toContain('9. Nxe5（白方走棋，白方视角）');
     expect(report.markdown).toContain('## 下一次训练建议');
   });
 });
@@ -501,6 +517,13 @@ describe('review report history helpers', () => {
       trainingAdvice: expect.stringContaining('候选着法与风险控制'),
     });
     expect(item.keyMoments[0]).toMatchObject({ label: '9. Nxe5', quality: '败着', centipawnLoss: 420 });
+    expect(item.keyMoments[0]).toMatchObject({
+      perspectiveLabel: '白方视角',
+      evaluatedSideLabel: '白方',
+      moverLabel: '白方',
+    });
+    expect(item.analysisSummary).toContain('评价方：白方');
+    expect(item.trainingAdvice).toContain('白方走棋');
   });
 
   it('searches, filters favorites, reopens reports, and aggregates history stats for strength profile linkage', () => {
@@ -654,6 +677,7 @@ describe('natural language coach helpers', () => {
         actualSan: 'g5',
         stockfishBestSan: 'Re8',
         multiPvLines: blunderAnalysis.multiPvLines,
+        moveColor: 'b',
       }),
     });
 
@@ -665,7 +689,11 @@ describe('natural language coach helpers', () => {
       practiceThemes: expect.arrayContaining(['王翼兵形/王安全', '候选着法与风险控制']),
     });
     expect(explanation.whyBad).toContain('损失 420 cp');
+    expect(explanation.whyBad).toContain('评价方：黑方');
+    expect(explanation.whyBad).toContain('走棋方：黑方');
     expect(explanation.strategicImpact).toContain('局势突变');
+    expect(explanation.candidateGuidance).toContain('实战选择 g5（本步走棋方视角 · 评价方：黑方 · 走棋方：黑方）');
+    expect(explanation.candidateGuidance).toContain('反馈是「风险着法」');
     expect(explanation.candidateGuidance).toContain('优先比较 Re8');
     expect(explanation.markdown).toContain('## 为什么这步差');
     expect(explanation.markdown).toContain('## 应关注的候选着法');
@@ -864,15 +892,18 @@ describe('analysis controls, cache, and key moment helpers', () => {
     });
     expect(blackMistake).toMatchObject({
       perspectiveLabel: '本步走棋方视角',
-      evaluatedSideLabel: '本步走棋方（黑方）',
+      evaluatedSideLabel: '黑方',
       moverLabel: '黑方',
-      summary: '本步走棋方视角 · 评价方：本步走棋方（黑方） · 走棋方：黑方 · 失误，损失 180 cp',
+      summary: '本步走棋方视角 · 评价方：黑方 · 走棋方：黑方 · 失误，损失 180 cp',
     });
     expect(boardPerspective).toMatchObject({
       perspectiveLabel: '棋盘视角（黑方在下）',
-      evaluatedSideLabel: '本步走棋方（黑方）',
+      evaluatedSideLabel: '棋盘下方（黑方）',
       moverLabel: '黑方',
     });
+    expect(boardPerspective.summary).toContain('评价方：棋盘下方（黑方）');
+    expect(boardPerspective.summary).toContain('走棋方：黑方');
+    expect(boardPerspective.summary).not.toContain('本步走棋方（黑方）');
     expect(boardPerspective.summary).not.toContain('我方');
     expect(boardPerspective.summary).not.toContain('用户');
   });
