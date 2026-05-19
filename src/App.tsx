@@ -3613,6 +3613,18 @@ function buildVariationPgn(baseFen: string, lanMoves: string[]) {
   return tokens.join(' ');
 }
 
+type RightPanelTab = 'history-import' | 'current-game-input' | 'review-history' | 'current-analysis' | 'review-report' | 'training-plan' | 'strength-profile';
+
+const rightPanelTabs: { id: RightPanelTab; label: string }[] = [
+  { id: 'history-import', label: '导入' },
+  { id: 'current-game-input', label: '输入' },
+  { id: 'review-history', label: '历史' },
+  { id: 'current-analysis', label: '分析' },
+  { id: 'review-report', label: '报告' },
+  { id: 'training-plan', label: '训练' },
+  { id: 'strength-profile', label: '画像' },
+];
+
 function App() {
   const [mode, setMode] = useState<ReplayMode>('pgn');
   const [text, setText] = useState(initialPgn);
@@ -3621,6 +3633,7 @@ function App() {
   const [evaluationPerspective, setEvaluationPerspective] = useState<EvaluationPerspective>('white');
   const [evaluationSide, setEvaluationSide] = useState<EvaluationSide>('white');
   const [strengthProfileRange, setStrengthProfileRange] = useState<StrengthProfileRange>('current');
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('current-game-input');
   const [reviewReportEvaluationSide, setReviewReportEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [middlegamePlanEvaluationSide, setMiddlegamePlanEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [endgameTrainingEvaluationSide, setEndgameTrainingEvaluationSide] = useState<EvaluationSide>(evaluationSide);
@@ -4845,206 +4858,234 @@ function App() {
         </div>
 
         <aside {...regions.panelColumn}>
-          <WorkspacePanel groupId="history-import">
-          <ImportExportTools
-            canExportPgn={mode === 'pgn' && !result.error}
-            onImportPgn={importPgnFile}
-            onExportPgn={exportCurrentPgn}
-            onCopyFen={copyCurrentFen}
-          />
+          <nav className="panel-tabs-nav" aria-label="右侧面板标签">
+            {rightPanelTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`panel-tab-button ${rightPanelTab === tab.id ? 'active' : ''}`}
+                onClick={() => setRightPanelTab(tab.id)}
+                aria-pressed={rightPanelTab === tab.id}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
 
-          {bulkPgnLibrary && (
-            <BulkPgnLibraryPanel
-              library={bulkPgnLibrary}
-              games={filteredBulkPgnGames}
-              insights={bulkPgnLibraryInsights}
-              filters={bulkPgnFilters}
-              activeContent={text}
-              onFilterChange={updateBulkPgnFilter}
-              onSelectGame={loadBulkPgnGame}
-              onToggleImportant={toggleBulkPgnImportant}
-            />
-          )}
-          </WorkspacePanel>
+          <div className="panel-tab-content">
+            {rightPanelTab === 'history-import' && (
+              <WorkspacePanel groupId="history-import">
+                <ImportExportTools
+                  canExportPgn={mode === 'pgn' && !result.error}
+                  onImportPgn={importPgnFile}
+                  onExportPgn={exportCurrentPgn}
+                  onCopyFen={copyCurrentFen}
+                />
 
-          <WorkspacePanel groupId="current-game-input">
-          <div className="mode-switch" role="tablist" aria-label="棋谱格式">
-            <button
-              type="button"
-              className={mode === 'pgn' ? 'active' : ''}
-              onClick={() => updateMode('pgn')}
-              role="tab"
-              aria-selected={mode === 'pgn'}
-            >
-              PGN
-            </button>
-            <button
-              type="button"
-              className={mode === 'fen' ? 'active' : ''}
-              onClick={() => updateMode('fen')}
-              role="tab"
-              aria-selected={mode === 'fen'}
-            >
-              FEN
-            </button>
+                {bulkPgnLibrary && (
+                  <BulkPgnLibraryPanel
+                    library={bulkPgnLibrary}
+                    games={filteredBulkPgnGames}
+                    insights={bulkPgnLibraryInsights}
+                    filters={bulkPgnFilters}
+                    activeContent={text}
+                    onFilterChange={updateBulkPgnFilter}
+                    onSelectGame={loadBulkPgnGame}
+                    onToggleImportant={toggleBulkPgnImportant}
+                  />
+                )}
+              </WorkspacePanel>
+            )}
+
+            {rightPanelTab === 'current-game-input' && (
+              <WorkspacePanel groupId="current-game-input">
+                <div className="mode-switch" role="tablist" aria-label="棋谱格式">
+                  <button
+                    type="button"
+                    className={mode === 'pgn' ? 'active' : ''}
+                    onClick={() => updateMode('pgn')}
+                    role="tab"
+                    aria-selected={mode === 'pgn'}
+                  >
+                    PGN
+                  </button>
+                  <button
+                    type="button"
+                    className={mode === 'fen' ? 'active' : ''}
+                    onClick={() => updateMode('fen')}
+                    role="tab"
+                    aria-selected={mode === 'fen'}
+                  >
+                    FEN
+                  </button>
+                </div>
+
+                <label className="input-block">
+                  <span>{mode === 'pgn' ? '粘贴 PGN 棋谱' : '粘贴 FEN 局面'}</span>
+                  <textarea
+                    value={text}
+                    onChange={(event) => updateText(event.target.value)}
+                    spellCheck={false}
+                  />
+                </label>
+
+                {result.error ? (
+                  <div className="error-box">{result.error}</div>
+                ) : (
+                  <MoveList
+                    source={result.source}
+                    moves={result.moves}
+                    positions={result.positions}
+                    activeIndex={safeIndex}
+                    variationPositions={variationPositions}
+                    activeVariationIndex={variationIndex}
+                    notesByPosition={notesByPosition}
+                    noteContext={{ mode, text }}
+                    hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
+                    onSelect={updatePositionIndex}
+                    onVariationSelect={(index) => {
+                      setVariationIndex(index);
+                      setSelectedSquare(null);
+                    }}
+                  />
+                )}
+              </WorkspacePanel>
+            )}
+
+            {rightPanelTab === 'current-analysis' && (
+              <WorkspacePanel groupId="current-analysis">
+                <EvaluationSidePanel side={evaluationSide} onSideChange={setEvaluationSide} />
+                <StockfishPanel
+                  status={engineStatus}
+                  analysis={analysis}
+                  isEnabled={isAnalysisEnabled}
+                  mode={engineMode}
+                  logs={engineLog}
+                  nextMove={nextOriginalMove}
+                  isVariationMode={Boolean(activeVariation)}
+                  fen={activeFen}
+                  isBoardFlipped={isBoardFlipped}
+                  perspective={evaluationPerspective}
+                  onPerspectiveChange={setEvaluationPerspective}
+                  onAnalyze={analyzeCurrentPosition}
+                  onStop={stopAnalysis}
+                />
+                <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
+                <GlobalAnalysisPanel
+                  analyses={globalAnalysis}
+                  isAnalyzing={isGlobalAnalyzing}
+                  progress={globalAnalysisProgress}
+                  canAnalyze={mode === 'pgn' && result.moves.length > 0 && !result.error}
+                  depthPreset={analysisDepthPreset}
+                  presetConfig={getAnalysisDepthPresetConfig(analysisDepthPreset)}
+                  momentFilter={globalAnalysisFilter}
+                  cacheStatus={globalAnalysisCacheStatus}
+                  onDepthPresetChange={(preset) => {
+                    setAnalysisDepthPreset(preset);
+                    setGlobalAnalysisCacheStatus('尚未分析');
+                  }}
+                  onMomentFilterChange={setGlobalAnalysisFilter}
+                  onAnalyze={() => runGlobalAnalysis(false)}
+                  onRefresh={() => runGlobalAnalysis(true)}
+                  onCancel={cancelGlobalAnalysis}
+                  onSelectMove={(index) => updatePositionIndex(index + 1)}
+                />
+              </WorkspacePanel>
+            )}
+
+            {rightPanelTab === 'review-report' && (
+              <WorkspacePanel groupId="review-report">
+                <ReviewReportPanel
+                  report={reviewReport}
+                  naturalLanguageCoach={naturalLanguageCoach}
+                  evaluationSide={reviewReportEvaluationSide}
+                  onEvaluationSideChange={setReviewReportEvaluationSide}
+                  onCopy={copyReviewReport}
+                  onCopyCoach={copyNaturalLanguageCoachReport}
+                  onExport={exportReviewReport}
+                  onExportCoach={exportNaturalLanguageCoachReport}
+                  onSave={saveReviewReportToHistory}
+                />
+              </WorkspacePanel>
+            )}
+
+            {rightPanelTab === 'training-plan' && (
+              <WorkspacePanel groupId="training-plan">
+                <GuessTrainingPanel
+                  isEnabled={isGuessMode}
+                  nextMove={nextOriginalMove}
+                  shouldHideNextMove={shouldHideNextMove}
+                  result={guessResult}
+                  pgnReplyMessage={pgnReplyMessage}
+                  stats={guessStats}
+                  candidateInput={candidateInput}
+                  candidateResult={candidateResult}
+                  candidateStats={candidateStats}
+                  candidateSessions={candidateSessions}
+                  onCandidateInputChange={setCandidateInput}
+                  onToggle={toggleGuessMode}
+                  onAnalyze={analyzeCurrentPosition}
+                  onNext={nextGuessPosition}
+                  onResetStats={resetGuessStats}
+                  onResetCandidateTraining={resetCandidateTraining}
+                />
+                <MistakeBookPanel
+                  cards={mistakeCards}
+                  trainingPlan={trainingPlan}
+                  dueCount={dueTrainingCount}
+                  statsByTag={trainingStatsByTag}
+                  onAddCurrent={addCurrentPositionToMistakeBook}
+                  onPractice={practiceMistakeCard}
+                  onMarkUnsolved={markMistakeCardUnsolved}
+                  onDelete={deleteMistakeCard}
+                />
+                <MiddlegamePlanPanel
+                  plan={middlegamePlanTraining}
+                  evaluationSide={middlegamePlanEvaluationSide}
+                  onEvaluationSideChange={setMiddlegamePlanEvaluationSide}
+                  onSelectMove={(index) => updatePositionIndex(index + 1)}
+                />
+                <EndgameTrainingPanel
+                  plan={endgameTrainingPlan}
+                  evaluationSide={endgameTrainingEvaluationSide}
+                  onEvaluationSideChange={setEndgameTrainingEvaluationSide}
+                  onSelectMove={(index) => updatePositionIndex(index + 1)}
+                />
+              </WorkspacePanel>
+            )}
+
+            {rightPanelTab === 'strength-profile' && (
+              <WorkspacePanel groupId="strength-profile">
+                <StrengthProfilePanel
+                  profile={strengthProfile}
+                  historyStats={reviewReportHistoryStats}
+                  evaluationSide={evaluationSide}
+                  onEvaluationSideChange={setEvaluationSide}
+                  range={strengthProfileRange}
+                  onRangeChange={setStrengthProfileRange}
+                />
+              </WorkspacePanel>
+            )}
+
+            {rightPanelTab === 'review-history' && (
+              <WorkspacePanel groupId="review-history">
+                <ReviewReportHistoryPanel
+                  history={filteredReviewReportHistory}
+                  stats={reviewReportHistoryStats}
+                  search={historySearch}
+                  resultFilter={historyResultFilter}
+                  favoriteOnly={showFavoritesOnly}
+                  onSearchChange={setHistorySearch}
+                  onResultFilterChange={setHistoryResultFilter}
+                  onFavoriteOnlyChange={setShowFavoritesOnly}
+                  onOpen={reopenReviewReport}
+                  onToggleFavorite={toggleReviewReportHistoryItemFavorite}
+                  onDelete={deleteReviewReportHistoryItem}
+                />
+              </WorkspacePanel>
+            )}
           </div>
-
-          <label className="input-block">
-            <span>{mode === 'pgn' ? '粘贴 PGN 棋谱' : '粘贴 FEN 局面'}</span>
-            <textarea
-              value={text}
-              onChange={(event) => updateText(event.target.value)}
-              spellCheck={false}
-            />
-          </label>
-
-          {result.error ? (
-            <div className="error-box">{result.error}</div>
-          ) : (
-            <MoveList
-              source={result.source}
-              moves={result.moves}
-              positions={result.positions}
-              activeIndex={safeIndex}
-              variationPositions={variationPositions}
-              activeVariationIndex={variationIndex}
-              notesByPosition={notesByPosition}
-              noteContext={{ mode, text }}
-              hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
-              onSelect={updatePositionIndex}
-              onVariationSelect={(index) => {
-                setVariationIndex(index);
-                setSelectedSquare(null);
-              }}
-            />
-          )}
-          </WorkspacePanel>
         </aside>
-
-        <section {...regions.resultsArea}>
-          <WorkspacePanel groupId="current-analysis">
-            <EvaluationSidePanel side={evaluationSide} onSideChange={setEvaluationSide} />
-            <StockfishPanel
-              status={engineStatus}
-              analysis={analysis}
-              isEnabled={isAnalysisEnabled}
-              mode={engineMode}
-              logs={engineLog}
-              nextMove={nextOriginalMove}
-              isVariationMode={Boolean(activeVariation)}
-              fen={activeFen}
-              isBoardFlipped={isBoardFlipped}
-              perspective={evaluationPerspective}
-              onPerspectiveChange={setEvaluationPerspective}
-              onAnalyze={analyzeCurrentPosition}
-              onStop={stopAnalysis}
-            />
-            <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
-            <GlobalAnalysisPanel
-              analyses={globalAnalysis}
-              isAnalyzing={isGlobalAnalyzing}
-              progress={globalAnalysisProgress}
-              canAnalyze={mode === 'pgn' && result.moves.length > 0 && !result.error}
-              depthPreset={analysisDepthPreset}
-              presetConfig={getAnalysisDepthPresetConfig(analysisDepthPreset)}
-              momentFilter={globalAnalysisFilter}
-              cacheStatus={globalAnalysisCacheStatus}
-              onDepthPresetChange={(preset) => {
-                setAnalysisDepthPreset(preset);
-                setGlobalAnalysisCacheStatus('尚未分析');
-              }}
-              onMomentFilterChange={setGlobalAnalysisFilter}
-              onAnalyze={() => runGlobalAnalysis(false)}
-              onRefresh={() => runGlobalAnalysis(true)}
-              onCancel={cancelGlobalAnalysis}
-              onSelectMove={(index) => updatePositionIndex(index + 1)}
-            />
-          </WorkspacePanel>
-
-          <WorkspacePanel groupId="review-report">
-            <ReviewReportPanel
-              report={reviewReport}
-              naturalLanguageCoach={naturalLanguageCoach}
-              evaluationSide={reviewReportEvaluationSide}
-              onEvaluationSideChange={setReviewReportEvaluationSide}
-              onCopy={copyReviewReport}
-              onCopyCoach={copyNaturalLanguageCoachReport}
-              onExport={exportReviewReport}
-              onExportCoach={exportNaturalLanguageCoachReport}
-              onSave={saveReviewReportToHistory}
-            />
-          </WorkspacePanel>
-
-          <WorkspacePanel groupId="training-plan">
-            <GuessTrainingPanel
-              isEnabled={isGuessMode}
-              nextMove={nextOriginalMove}
-              shouldHideNextMove={shouldHideNextMove}
-              result={guessResult}
-              pgnReplyMessage={pgnReplyMessage}
-              stats={guessStats}
-              candidateInput={candidateInput}
-              candidateResult={candidateResult}
-              candidateStats={candidateStats}
-              candidateSessions={candidateSessions}
-              onCandidateInputChange={setCandidateInput}
-              onToggle={toggleGuessMode}
-              onAnalyze={analyzeCurrentPosition}
-              onNext={nextGuessPosition}
-              onResetStats={resetGuessStats}
-              onResetCandidateTraining={resetCandidateTraining}
-            />
-            <MistakeBookPanel
-              cards={mistakeCards}
-              trainingPlan={trainingPlan}
-              dueCount={dueTrainingCount}
-              statsByTag={trainingStatsByTag}
-              onAddCurrent={addCurrentPositionToMistakeBook}
-              onPractice={practiceMistakeCard}
-              onMarkUnsolved={markMistakeCardUnsolved}
-              onDelete={deleteMistakeCard}
-            />
-            <MiddlegamePlanPanel
-              plan={middlegamePlanTraining}
-              evaluationSide={middlegamePlanEvaluationSide}
-              onEvaluationSideChange={setMiddlegamePlanEvaluationSide}
-              onSelectMove={(index) => updatePositionIndex(index + 1)}
-            />
-            <EndgameTrainingPanel
-              plan={endgameTrainingPlan}
-              evaluationSide={endgameTrainingEvaluationSide}
-              onEvaluationSideChange={setEndgameTrainingEvaluationSide}
-              onSelectMove={(index) => updatePositionIndex(index + 1)}
-            />
-          </WorkspacePanel>
-
-          <WorkspacePanel groupId="strength-profile">
-            <StrengthProfilePanel
-              profile={strengthProfile}
-              historyStats={reviewReportHistoryStats}
-              evaluationSide={evaluationSide}
-              onEvaluationSideChange={setEvaluationSide}
-              range={strengthProfileRange}
-              onRangeChange={setStrengthProfileRange}
-            />
-          </WorkspacePanel>
-
-          <WorkspacePanel groupId="review-history">
-            <ReviewReportHistoryPanel
-              history={filteredReviewReportHistory}
-              stats={reviewReportHistoryStats}
-              search={historySearch}
-              resultFilter={historyResultFilter}
-              favoriteOnly={showFavoritesOnly}
-              onSearchChange={setHistorySearch}
-              onResultFilterChange={setHistoryResultFilter}
-              onFavoriteOnlyChange={setShowFavoritesOnly}
-              onOpen={reopenReviewReport}
-              onToggleFavorite={toggleReviewReportHistoryItemFavorite}
-              onDelete={deleteReviewReportHistoryItem}
-            />
-          </WorkspacePanel>
-        </section>
       </section>
 
       {pendingPromotion && (
