@@ -4980,6 +4980,7 @@ function App() {
               activeIndex={safeIndex}
               variationPositions={variationPositions}
               activeVariationIndex={variationIndex}
+              analyses={globalAnalysis}
               onSelect={updatePositionIndex}
               onVariationSelect={(index) => {
                 setVariationIndex(index);
@@ -6812,6 +6813,7 @@ function BoardMoveBar({
   activeIndex,
   variationPositions,
   activeVariationIndex,
+  analyses,
   onSelect,
   onVariationSelect,
 }: {
@@ -6819,12 +6821,34 @@ function BoardMoveBar({
   activeIndex: number;
   variationPositions: VariationPosition[];
   activeVariationIndex: number;
+  analyses?: GlobalMoveAnalysis[];
   onSelect: (index: number) => void;
   onVariationSelect: (index: number) => void;
 }) {
+  const [detailExpanded, setDetailExpanded] = useState(false);
+
   if (moves.length === 0) {
     return null;
   }
+
+  const analysisByMoveIndex = useMemo(() => {
+    const map = new Map<number, GlobalMoveAnalysis>();
+    analyses?.forEach((a) => map.set(a.moveIndex, a));
+    return map;
+  }, [analyses]);
+
+  const activeAnalysis =
+    activeVariationIndex >= 0
+      ? undefined
+      : activeIndex > 0
+        ? analysisByMoveIndex.get(activeIndex - 1)
+        : undefined;
+
+  const getQualityClass = (moveIndex: number): string => {
+    const a = analysisByMoveIndex.get(moveIndex - 1);
+    if (!a) return '';
+    return `quality-${a.quality}`;
+  };
 
   const pairs: { number: number; white?: { san: string; index: number }; black?: { san: string; index: number } }[] = [];
   for (let i = 0; i < moves.length; i += 1) {
@@ -6841,54 +6865,101 @@ function BoardMoveBar({
   }
 
   return (
-    <div className="board-move-bar" aria-label="走法序列">
-      <button
-        type="button"
-        className={activeIndex === 0 && activeVariationIndex < 0 ? 'active' : ''}
-        onClick={() => onSelect(0)}
-      >
-        开局
-      </button>
-      {pairs.map((pair) => {
-        const white = pair.white;
-        const black = pair.black;
-        return (
-          <div key={pair.number} className="board-move-pair">
-            <span className="move-pair-number">{pair.number}.</span>
-            {white && (
+    <div className="board-move-bar-wrapper">
+      <div className="board-move-bar" aria-label="走法序列">
+        <button
+          type="button"
+          className={activeIndex === 0 && activeVariationIndex < 0 ? 'active' : ''}
+          onClick={() => onSelect(0)}
+        >
+          开局
+        </button>
+        {pairs.map((pair) => {
+          const white = pair.white;
+          const black = pair.black;
+          return (
+            <div key={pair.number} className="board-move-pair">
+              <span className="move-pair-number">{pair.number}.</span>
+              {white && (
+                <button
+                  type="button"
+                  className={`${getQualityClass(white.index)} ${activeIndex === white.index && activeVariationIndex < 0 ? 'active' : ''}`}
+                  onClick={() => onSelect(white.index)}
+                >
+                  {white.san}
+                </button>
+              )}
+              {black && (
+                <button
+                  type="button"
+                  className={`${getQualityClass(black.index)} ${activeIndex === black.index && activeVariationIndex < 0 ? 'active' : ''}`}
+                  onClick={() => onSelect(black.index)}
+                >
+                  {black.san}
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {variationPositions.length > 0 && (
+          <div className="board-move-variation">
+            <span className="move-pair-number">试</span>
+            {variationPositions.map((vp, index) => (
               <button
                 type="button"
-                className={activeIndex === white.index && activeVariationIndex < 0 ? 'active' : ''}
-                onClick={() => onSelect(white.index)}
+                key={`${vp.fen}-${index}`}
+                className={activeVariationIndex === index ? 'active variation-active' : 'variation-entry'}
+                onClick={() => onVariationSelect(index)}
               >
-                {white.san}
+                {vp.label}
               </button>
-            )}
-            {black && (
-              <button
-                type="button"
-                className={activeIndex === black.index && activeVariationIndex < 0 ? 'active' : ''}
-                onClick={() => onSelect(black.index)}
-              >
-                {black.san}
-              </button>
-            )}
+            ))}
           </div>
-        );
-      })}
-      {variationPositions.length > 0 && (
-        <div className="board-move-variation">
-          <span className="move-pair-number">试</span>
-          {variationPositions.map((vp, index) => (
+        )}
+      </div>
+
+      {activeAnalysis && (
+        <div className="board-move-detail">
+          <div className="board-move-detail-header">
+            <span className={`move-quality-badge quality-badge-${activeAnalysis.quality}`}>
+              {activeAnalysis.quality}
+            </span>
+            {activeAnalysis.isSwingPoint && (
+              <span className="move-swing-badge">局势突变</span>
+            )}
+            <span className="move-analysis-loss">
+              {describeGlobalAnalysisPerspective(activeAnalysis).summary}
+            </span>
             <button
               type="button"
-              key={`${vp.fen}-${index}`}
-              className={activeVariationIndex === index ? 'active variation-active' : 'variation-entry'}
-              onClick={() => onVariationSelect(index)}
+              className="board-move-detail-toggle"
+              onClick={() => setDetailExpanded((v) => !v)}
             >
-              {vp.label}
+              {detailExpanded ? '收起' : '详情'}
             </button>
-          ))}
+          </div>
+          {detailExpanded && (
+            <div className="board-move-detail-body">
+              <div className="move-analysis-best">
+                首选 {activeAnalysis.bestMoveSan || '-'}
+              </div>
+              {activeAnalysis.multiPvLines.length > 0 && (
+                <div className="move-analysis-multipv">
+                  {formatMultiPvDisplayLines({
+                    multiPvLines: activeAnalysis.multiPvLines,
+                    fallbackBestMoveSan: activeAnalysis.bestMoveSan,
+                    fallbackPv: activeAnalysis.primaryPv?.length
+                      ? activeAnalysis.primaryPv
+                      : activeAnalysis.bestMoveSan
+                        ? [activeAnalysis.bestMoveSan]
+                        : [],
+                  }).map((line, i) => (
+                    <span key={i}>{line}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

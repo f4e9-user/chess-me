@@ -2097,6 +2097,56 @@ textarea:focus {
   color: #ffffff;
 }
 
+.board-move-bar-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.board-move-pair button.quality-好棋 {
+  border-bottom: 2px solid #226f54;
+}
+
+.board-move-pair button.quality-疑问手 {
+  border-bottom: 2px solid #a56b00;
+}
+
+.board-move-pair button.quality-失误,
+.board-move-pair button.quality-败着 {
+  border-bottom: 2px solid #a94442;
+}
+
+.board-move-detail {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(34, 111, 84, 0.04);
+  padding: 8px 10px;
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.board-move-detail-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.board-move-detail-toggle {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.board-move-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .move-list button.active .move-quality-badge {
   background: rgba(255, 255, 255, 0.22);
   color: #ffffff;
