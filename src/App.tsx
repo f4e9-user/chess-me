@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react';
 import { Chess, type Color, type Move, type PieceSymbol, type Square } from 'chess.js';
 
 const layoutRegionClassNames = {
@@ -4954,6 +4954,7 @@ function App() {
                         setVariationIndex(index);
                         setSelectedSquare(null);
                       }}
+                      analyses={globalAnalysis}
                     />
                   )}
                 </WorkspacePanel>
@@ -4996,7 +4997,6 @@ function App() {
                   onAnalyze={() => runGlobalAnalysis(false)}
                   onRefresh={() => runGlobalAnalysis(true)}
                   onCancel={cancelGlobalAnalysis}
-                  onSelectMove={(index) => updatePositionIndex(index + 1)}
                 />
                 <StockfishPanel
                   status={engineStatus}
@@ -5901,7 +5901,6 @@ function GlobalAnalysisPanel({
   onAnalyze,
   onRefresh,
   onCancel,
-  onSelectMove,
 }: {
   analyses: GlobalMoveAnalysis[];
   isAnalyzing: boolean;
@@ -5916,10 +5915,8 @@ function GlobalAnalysisPanel({
   onAnalyze: () => void;
   onRefresh: () => void;
   onCancel: () => void;
-  onSelectMove: (moveIndex: number) => void;
 }) {
   const swingPoints = analyses.filter((item) => item.isSwingPoint);
-  const visibleAnalyses = filterGlobalAnalysisMoments(analyses, momentFilter);
   const keyMomentSummary = buildKeyMomentSummary(filterGlobalAnalysisMoments(analyses, 'key'));
 
   return (
@@ -5997,32 +5994,6 @@ function GlobalAnalysisPanel({
         <div className="swing-summary">
           <span>局势突变点</span>
           <p>{swingPoints.map((item) => item.label).join('、')}</p>
-        </div>
-      )}
-
-      {visibleAnalyses.length > 0 && (
-        <div className="global-analysis-list">
-          {visibleAnalyses.map((item) => (
-            <button
-              type="button"
-              key={`${item.moveIndex}-${item.san}`}
-              className={`analysis-row quality-${item.quality} ${item.isSwingPoint ? 'swing' : ''}`}
-              onClick={() => onSelectMove(item.moveIndex)}
-            >
-              <span className="analysis-label">{item.label}</span>
-              <span className="analysis-quality">{item.quality}</span>
-              <span className="analysis-loss">{describeGlobalAnalysisPerspective(item).summary}</span>
-              <span className="analysis-best">首选 {item.bestMoveSan || '-'}</span>
-              <span className="analysis-multipv">
-                {formatMultiPvDisplayLines({
-                  multiPvLines: item.multiPvLines,
-                  fallbackBestMoveSan: item.bestMoveSan,
-                  fallbackPv: item.primaryPv?.length ? item.primaryPv : item.bestMoveSan ? [item.bestMoveSan] : [],
-                }).join(' ｜ ')}
-              </span>
-              {item.isSwingPoint && <strong>突变</strong>}
-            </button>
-          ))}
         </div>
       )}
     </section>
@@ -6635,6 +6606,7 @@ function MoveList({
   hiddenMoveIndex,
   onSelect,
   onVariationSelect,
+  analyses,
 }: {
   source: ReplayMode;
   moves: Move[];
@@ -6650,7 +6622,38 @@ function MoveList({
   hiddenMoveIndex: number | null;
   onSelect: (index: number) => void;
   onVariationSelect: (index: number) => void;
+  analyses?: GlobalMoveAnalysis[];
 }) {
+  const [expandedIndices, setExpandedIndices] = useState<Set<number>>(new Set());
+
+  const toggleExpand = (moveIndex: number) => {
+    setExpandedIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(moveIndex)) {
+        next.delete(moveIndex);
+      } else {
+        next.add(moveIndex);
+      }
+      return next;
+    });
+  };
+
+  const expandAllProblematic = () => {
+    if (!analyses) return;
+    const problematic = analyses.filter((a) => a.quality !== '好棋');
+    setExpandedIndices(new Set(problematic.map((a) => a.moveIndex)));
+  };
+
+  const collapseAll = () => {
+    setExpandedIndices(new Set());
+  };
+
+  const analysisByMoveIndex = useMemo(() => {
+    const map = new Map<number, GlobalMoveAnalysis>();
+    analyses?.forEach((a) => map.set(a.moveIndex, a));
+    return map;
+  }, [analyses]);
+
   if (source === 'fen') {
     return (
       <div className="move-list">
@@ -6684,9 +6687,26 @@ function MoveList({
     );
   }
 
+  const hasAnalyses = analyses && analyses.length > 0;
+  const problematicCount = analyses?.filter((a) => a.quality !== '好棋').length ?? 0;
+  const allProblematicExpanded =
+    problematicCount > 0 &&
+    analyses?.filter((a) => a.quality !== '好棋').every((a) => expandedIndices.has(a.moveIndex));
+
   return (
     <div className="move-list">
-      <h2>走法</h2>
+      <div className="move-list-header">
+        <h2>走法</h2>
+        {hasAnalyses && problematicCount > 0 && (
+          <button
+            type="button"
+            className="move-expand-all-btn"
+            onClick={allProblematicExpanded ? collapseAll : expandAllProblematic}
+          >
+            {allProblematicExpanded ? '收起问题着法' : '展开问题着法'}
+          </button>
+        )}
+      </div>
       <button
         type="button"
         className={activeIndex === 0 && activeVariationIndex < 0 ? 'active' : ''}
@@ -6703,30 +6723,83 @@ function MoveList({
       </button>
       <div className="moves-grid">
         {moves.map((move, index) => {
+          const moveIndex = index + 1;
           const isHidden = hiddenMoveIndex === index;
+          const analysis = analysisByMoveIndex.get(moveIndex);
+          const isExpanded = expandedIndices.has(moveIndex);
           return (
-          <button
-            type="button"
-            key={`${move.lan}-${index}`}
-            className={activeIndex === index + 1 && activeVariationIndex < 0 ? 'active' : ''}
-            onClick={() => onSelect(index + 1)}
-          >
-            <MoveButtonContent
-              label={isHidden ? `${formatMoveLabel(move, index).split(' ')[0]} ??` : formatMoveLabel(move, index)}
-              hasComment={Boolean(positions[index + 1]?.comment)}
-              hasNote={Boolean(
-                positions[index + 1] &&
-                  notesByPosition[
-                    getPositionNoteKey(
-                      noteContext.mode,
-                      noteContext.text,
-                      index + 1,
-                      positions[index + 1].fen,
-                    )
-                  ],
+            <Fragment key={`${move.lan}-${index}`}>
+              <button
+                type="button"
+                className={activeIndex === moveIndex && activeVariationIndex < 0 ? 'active' : ''}
+                onClick={() => onSelect(moveIndex)}
+              >
+                <MoveButtonContent
+                  label={
+                    isHidden ? `${formatMoveLabel(move, index).split(' ')[0]} ??` : formatMoveLabel(move, index)
+                  }
+                  hasComment={Boolean(positions[moveIndex]?.comment)}
+                  hasNote={Boolean(
+                    positions[moveIndex] &&
+                      notesByPosition[
+                        getPositionNoteKey(
+                          noteContext.mode,
+                          noteContext.text,
+                          moveIndex,
+                          positions[moveIndex].fen,
+                        )
+                      ],
+                  )}
+                  qualityBadge={analysis?.quality}
+                />
+              </button>
+              {analysis && (
+                <>
+                  <button
+                    type="button"
+                    className="move-expand-toggle"
+                    onClick={() => toggleExpand(moveIndex)}
+                    aria-expanded={isExpanded}
+                    aria-label={`${isExpanded ? '收起' : '展开'} ${analysis.label} 分析详情`}
+                  >
+                    {isExpanded ? '收起' : '详情'}
+                  </button>
+                  {isExpanded && (
+                    <div className="move-analysis-detail">
+                      <div className="move-analysis-header">
+                        <span className={`move-quality-badge quality-badge-${analysis.quality}`}>
+                          {analysis.quality}
+                        </span>
+                        {analysis.isSwingPoint && (
+                          <span className="move-swing-badge">局势突变</span>
+                        )}
+                        <span className="move-analysis-loss">
+                          {describeGlobalAnalysisPerspective(analysis).summary}
+                        </span>
+                      </div>
+                      <div className="move-analysis-best">
+                        首选 {analysis.bestMoveSan || '-'}
+                      </div>
+                      {analysis.multiPvLines.length > 0 && (
+                        <div className="move-analysis-multipv">
+                          {formatMultiPvDisplayLines({
+                            multiPvLines: analysis.multiPvLines,
+                            fallbackBestMoveSan: analysis.bestMoveSan,
+                            fallbackPv: analysis.primaryPv?.length
+                              ? analysis.primaryPv
+                              : analysis.bestMoveSan
+                                ? [analysis.bestMoveSan]
+                                : [],
+                          }).map((line, i) => (
+                            <span key={i}>{line}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
-            />
-          </button>
+            </Fragment>
           );
         })}
       </div>
@@ -6743,20 +6816,29 @@ function MoveButtonContent({
   label,
   hasComment,
   hasNote,
+  qualityBadge,
 }: {
   label: string;
   hasComment: boolean;
   hasNote: boolean;
+  qualityBadge?: MoveQualityLabel;
 }) {
   return (
     <span className="move-button-content">
       <span>{label}</span>
-      {(hasComment || hasNote) && (
-        <span className="move-badges" aria-hidden="true">
-          {hasComment && <span>C</span>}
-          {hasNote && <span>N</span>}
-        </span>
-      )}
+      <span className="move-right-badges">
+        {qualityBadge && (
+          <span className={`move-quality-badge quality-badge-${qualityBadge}`} aria-hidden="true">
+            {qualityBadge}
+          </span>
+        )}
+        {(hasComment || hasNote) && (
+          <span className="move-badges" aria-hidden="true">
+            {hasComment && <span>C</span>}
+            {hasNote && <span>N</span>}
+          </span>
+        )}
+      </span>
     </span>
   );
 }

@@ -1958,6 +1958,119 @@ textarea:focus {
   color: #ffffff;
 }
 
+.move-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.move-list-header h2 {
+  margin: 0;
+}
+
+.move-expand-all-btn {
+  font-size: 0.76rem;
+  padding: 4px 10px;
+  flex-shrink: 0;
+}
+
+.move-right-badges {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.move-quality-badge {
+  display: grid;
+  place-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.quality-badge-好棋 {
+  background: rgba(34, 111, 84, 0.12);
+  color: #226f54;
+}
+
+.quality-badge-疑问手 {
+  background: rgba(166, 107, 0, 0.12);
+  color: #a56b00;
+}
+
+.quality-badge-失误 {
+  background: rgba(169, 68, 66, 0.12);
+  color: #a94442;
+}
+
+.quality-badge-败着 {
+  background: rgba(169, 68, 66, 0.18);
+  color: #a94442;
+}
+
+.move-list button.active .move-quality-badge {
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+}
+
+.move-expand-toggle {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.move-analysis-detail {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(34, 111, 84, 0.04);
+  border: 1px solid var(--border);
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.move-analysis-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.move-swing-badge {
+  display: grid;
+  place-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(214, 145, 29, 0.12);
+  color: #a56b00;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.move-analysis-loss {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.move-analysis-best {
+  font-weight: 700;
+}
+
+.move-analysis-multipv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+}
+
 .variation-moves {
   display: flex;
   flex-direction: column;
