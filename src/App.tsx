@@ -6944,8 +6944,8 @@ function MoveList({
         {moves.map((move, index) => {
           const moveIndex = index + 1;
           const isHidden = hiddenMoveIndex === index;
-          const analysis = analysisByMoveIndex.get(moveIndex);
-          const isExpanded = expandedIndices.has(moveIndex);
+          const analysis = analysisByMoveIndex.get(index);
+          const isExpanded = expandedIndices.has(index);
           return (
             <Fragment key={`${move.lan}-${index}`}>
               <button
@@ -6977,7 +6977,7 @@ function MoveList({
                   <button
                     type="button"
                     className="move-expand-toggle"
-                    onClick={() => toggleExpand(moveIndex)}
+                    onClick={() => toggleExpand(index)}
                     aria-expanded={isExpanded}
                     aria-label={`${isExpanded ? '收起' : '展开'} ${analysis.label} 分析详情`}
                   >
