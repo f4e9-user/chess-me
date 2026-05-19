@@ -2016,7 +2016,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 100%;
+  width: min(100%, 720px);
   min-width: 0;
   overflow: hidden;
 }
@@ -2286,7 +2286,8 @@ textarea:focus {
   .engine-panel,
   .opening-panel,
   .notes-panel,
-  .fen-display {
+  .fen-display,
+  .board-move-bar-wrapper {
     width: 100%;
   }
 }
