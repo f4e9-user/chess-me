@@ -570,6 +570,7 @@ h2 {
 .swing-summary p {
   margin: 4px 0 0;
   color: var(--ink-muted);
+  font-size: 0.78rem;
   line-height: 1.45;
 }
 
@@ -752,6 +753,15 @@ h2 {
 
 .analysis-preset-help {
   margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.analysis-key-summary {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .analysis-multipv {
@@ -858,6 +868,10 @@ h2 {
   color: #a94442;
 }
 
+.analysis-row {
+  font-size: 0.88rem;
+}
+
 .saved-variation-list {
   display: grid;
   gap: 8px;
@@ -886,6 +900,79 @@ h2 {
   border-radius: 8px;
   padding: 0 10px;
   font-weight: 800;
+}
+
+.evaluation-side-panel {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+
+.section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.section-heading span {
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.section-heading small {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.segmented-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.segmented-control button {
+  flex: 1 1 60px;
+  min-height: 36px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.evaluation-side-switch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.evaluation-side-switch span {
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.evaluation-side-switch button {
+  min-height: 32px;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.analysis-player-summaries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
 }
 
 .engine-panel {
@@ -921,6 +1008,7 @@ h2 {
 .engine-explanation p {
   margin: 4px 0 0;
   color: var(--ink-muted);
+  font-size: 0.78rem;
   line-height: 1.45;
 }
 
@@ -1089,6 +1177,7 @@ h2 {
 .strength-profile-panel p {
   margin: 0;
   color: var(--ink-muted);
+  font-size: 0.88rem;
   line-height: 1.45;
 }
 
