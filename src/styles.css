@@ -946,6 +946,12 @@ h2 {
   font-weight: 800;
 }
 
+.segmented-control button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
 .evaluation-side-switch {
   display: flex;
   flex-wrap: wrap;
