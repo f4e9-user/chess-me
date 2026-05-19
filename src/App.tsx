@@ -3613,12 +3613,10 @@ function buildVariationPgn(baseFen: string, lanMoves: string[]) {
   return tokens.join(' ');
 }
 
-type RightPanelTab = 'history-import' | 'current-game-input' | 'review-history' | 'current-analysis' | 'review-report' | 'training-plan' | 'strength-profile';
+type RightPanelTab = 'library' | 'current-analysis' | 'review-report' | 'training-plan' | 'strength-profile';
 
 const rightPanelTabs: { id: RightPanelTab; label: string }[] = [
-  { id: 'history-import', label: '导入' },
-  { id: 'current-game-input', label: '输入' },
-  { id: 'review-history', label: '历史' },
+  { id: 'library', label: '棋谱' },
   { id: 'current-analysis', label: '分析' },
   { id: 'review-report', label: '报告' },
   { id: 'training-plan', label: '训练' },
@@ -3633,7 +3631,7 @@ function App() {
   const [evaluationPerspective, setEvaluationPerspective] = useState<EvaluationPerspective>('white');
   const [evaluationSide, setEvaluationSide] = useState<EvaluationSide>('white');
   const [strengthProfileRange, setStrengthProfileRange] = useState<StrengthProfileRange>('current');
-  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('current-game-input');
+  const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('library');
   const [reviewReportEvaluationSide, setReviewReportEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [middlegamePlanEvaluationSide, setMiddlegamePlanEvaluationSide] = useState<EvaluationSide>(evaluationSide);
   const [endgameTrainingEvaluationSide, setEndgameTrainingEvaluationSide] = useState<EvaluationSide>(evaluationSide);
@@ -4873,83 +4871,99 @@ function App() {
           </nav>
 
           <div className="panel-tab-content">
-            {rightPanelTab === 'history-import' && (
-              <WorkspacePanel groupId="history-import">
-                <ImportExportTools
-                  canExportPgn={mode === 'pgn' && !result.error}
-                  onImportPgn={importPgnFile}
-                  onExportPgn={exportCurrentPgn}
-                  onCopyFen={copyCurrentFen}
-                />
-
-                {bulkPgnLibrary && (
-                  <BulkPgnLibraryPanel
-                    library={bulkPgnLibrary}
-                    games={filteredBulkPgnGames}
-                    insights={bulkPgnLibraryInsights}
-                    filters={bulkPgnFilters}
-                    activeContent={text}
-                    onFilterChange={updateBulkPgnFilter}
-                    onSelectGame={loadBulkPgnGame}
-                    onToggleImportant={toggleBulkPgnImportant}
+            {rightPanelTab === 'library' && (
+              <>
+                <WorkspacePanel groupId="history-import">
+                  <ImportExportTools
+                    canExportPgn={mode === 'pgn' && !result.error}
+                    onImportPgn={importPgnFile}
+                    onExportPgn={exportCurrentPgn}
+                    onCopyFen={copyCurrentFen}
                   />
-                )}
-              </WorkspacePanel>
-            )}
 
-            {rightPanelTab === 'current-game-input' && (
-              <WorkspacePanel groupId="current-game-input">
-                <div className="mode-switch" role="tablist" aria-label="棋谱格式">
-                  <button
-                    type="button"
-                    className={mode === 'pgn' ? 'active' : ''}
-                    onClick={() => updateMode('pgn')}
-                    role="tab"
-                    aria-selected={mode === 'pgn'}
-                  >
-                    PGN
-                  </button>
-                  <button
-                    type="button"
-                    className={mode === 'fen' ? 'active' : ''}
-                    onClick={() => updateMode('fen')}
-                    role="tab"
-                    aria-selected={mode === 'fen'}
-                  >
-                    FEN
-                  </button>
-                </div>
+                  {bulkPgnLibrary && (
+                    <BulkPgnLibraryPanel
+                      library={bulkPgnLibrary}
+                      games={filteredBulkPgnGames}
+                      insights={bulkPgnLibraryInsights}
+                      filters={bulkPgnFilters}
+                      activeContent={text}
+                      onFilterChange={updateBulkPgnFilter}
+                      onSelectGame={loadBulkPgnGame}
+                      onToggleImportant={toggleBulkPgnImportant}
+                    />
+                  )}
+                </WorkspacePanel>
 
-                <label className="input-block">
-                  <span>{mode === 'pgn' ? '粘贴 PGN 棋谱' : '粘贴 FEN 局面'}</span>
-                  <textarea
-                    value={text}
-                    onChange={(event) => updateText(event.target.value)}
-                    spellCheck={false}
+                <WorkspacePanel groupId="current-game-input">
+                  <div className="mode-switch" role="tablist" aria-label="棋谱格式">
+                    <button
+                      type="button"
+                      className={mode === 'pgn' ? 'active' : ''}
+                      onClick={() => updateMode('pgn')}
+                      role="tab"
+                      aria-selected={mode === 'pgn'}
+                    >
+                      PGN
+                    </button>
+                    <button
+                      type="button"
+                      className={mode === 'fen' ? 'active' : ''}
+                      onClick={() => updateMode('fen')}
+                      role="tab"
+                      aria-selected={mode === 'fen'}
+                    >
+                      FEN
+                    </button>
+                  </div>
+
+                  <label className="input-block">
+                    <span>{mode === 'pgn' ? '粘贴 PGN 棋谱' : '粘贴 FEN 局面'}</span>
+                    <textarea
+                      value={text}
+                      onChange={(event) => updateText(event.target.value)}
+                      spellCheck={false}
+                    />
+                  </label>
+
+                  {result.error ? (
+                    <div className="error-box">{result.error}</div>
+                  ) : (
+                    <MoveList
+                      source={result.source}
+                      moves={result.moves}
+                      positions={result.positions}
+                      activeIndex={safeIndex}
+                      variationPositions={variationPositions}
+                      activeVariationIndex={variationIndex}
+                      notesByPosition={notesByPosition}
+                      noteContext={{ mode, text }}
+                      hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
+                      onSelect={updatePositionIndex}
+                      onVariationSelect={(index) => {
+                        setVariationIndex(index);
+                        setSelectedSquare(null);
+                      }}
+                    />
+                  )}
+                </WorkspacePanel>
+
+                <WorkspacePanel groupId="review-history">
+                  <ReviewReportHistoryPanel
+                    history={filteredReviewReportHistory}
+                    stats={reviewReportHistoryStats}
+                    search={historySearch}
+                    resultFilter={historyResultFilter}
+                    favoriteOnly={showFavoritesOnly}
+                    onSearchChange={setHistorySearch}
+                    onResultFilterChange={setHistoryResultFilter}
+                    onFavoriteOnlyChange={setShowFavoritesOnly}
+                    onOpen={reopenReviewReport}
+                    onToggleFavorite={toggleReviewReportHistoryItemFavorite}
+                    onDelete={deleteReviewReportHistoryItem}
                   />
-                </label>
-
-                {result.error ? (
-                  <div className="error-box">{result.error}</div>
-                ) : (
-                  <MoveList
-                    source={result.source}
-                    moves={result.moves}
-                    positions={result.positions}
-                    activeIndex={safeIndex}
-                    variationPositions={variationPositions}
-                    activeVariationIndex={variationIndex}
-                    notesByPosition={notesByPosition}
-                    noteContext={{ mode, text }}
-                    hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
-                    onSelect={updatePositionIndex}
-                    onVariationSelect={(index) => {
-                      setVariationIndex(index);
-                      setSelectedSquare(null);
-                    }}
-                  />
-                )}
-              </WorkspacePanel>
+                </WorkspacePanel>
+              </>
             )}
 
             {rightPanelTab === 'current-analysis' && (
@@ -5067,23 +5081,6 @@ function App() {
               </WorkspacePanel>
             )}
 
-            {rightPanelTab === 'review-history' && (
-              <WorkspacePanel groupId="review-history">
-                <ReviewReportHistoryPanel
-                  history={filteredReviewReportHistory}
-                  stats={reviewReportHistoryStats}
-                  search={historySearch}
-                  resultFilter={historyResultFilter}
-                  favoriteOnly={showFavoritesOnly}
-                  onSearchChange={setHistorySearch}
-                  onResultFilterChange={setHistoryResultFilter}
-                  onFavoriteOnlyChange={setShowFavoritesOnly}
-                  onOpen={reopenReviewReport}
-                  onToggleFavorite={toggleReviewReportHistoryItemFavorite}
-                  onDelete={deleteReviewReportHistoryItem}
-                />
-              </WorkspacePanel>
-            )}
           </div>
         </aside>
       </section>
