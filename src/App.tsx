@@ -5461,59 +5461,32 @@ function EvaluationSidePanel({
 }
 
 function EvaluationBar({ score }: { score: StockfishAnalysis['score'] | null }) {
-  if (!score) {
-    return (
-      <div className="eval-bar">
-        <div className="eval-bar-track">
-          <div className="eval-bar-center" />
-        </div>
-        <div className="eval-bar-labels">
-          <span>黑方优势</span>
-          <span>—</span>
-          <span>白方优势</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (score.type === 'mate') {
-    const isWhiteMate = score.value > 0;
-    return (
-      <div className="eval-bar">
-        <div className="eval-bar-track">
-          <div className="eval-bar-center" />
-          <div
-            className={`eval-bar-mate ${isWhiteMate ? 'white' : 'black'}`}
-          >
-            {isWhiteMate ? '白方胜势' : '黑方胜势'} M{Math.abs(score.value)}
-          </div>
-        </div>
-        <div className="eval-bar-labels">
-          <span>黑方优势</span>
-          <span>{formatEngineScore(score)}</span>
-          <span>白方优势</span>
-        </div>
-      </div>
-    );
-  }
-
   const maxCp = 500;
-  const clamped = Math.max(-maxCp, Math.min(maxCp, score.value));
-  const absPercent = (Math.abs(clamped) / maxCp) * 50;
-  const leftPercent = clamped >= 0 ? 50 : 50 - absPercent;
+  const getIndicatorLeft = (): number => {
+    if (!score) return 50;
+    if (score.type === 'mate') {
+      return score.value > 0 ? 100 : 0;
+    }
+    const clamped = Math.max(-maxCp, Math.min(maxCp, score.value));
+    return ((clamped + maxCp) / (maxCp * 2)) * 100;
+  };
+
+  const indicatorLeft = getIndicatorLeft();
 
   return (
     <div className="eval-bar">
       <div className="eval-bar-track">
-        <div className="eval-bar-center" />
         <div
-          className="eval-bar-fill"
-          style={{
-            left: `${leftPercent}%`,
-            width: `${absPercent}%`,
-            background: clamped >= 0 ? '#ffffff' : '#1d2520',
-          }}
+          className="eval-bar-indicator"
+          style={{ left: `${indicatorLeft}%` }}
         />
+        {score?.type === 'mate' && (
+          <div
+            className={`eval-bar-mate ${score.value > 0 ? 'white' : 'black'}`}
+          >
+            {score.value > 0 ? '白方胜势' : '黑方胜势'} M{Math.abs(score.value)}
+          </div>
+        )}
       </div>
       <div className="eval-bar-labels">
         <span>黑方优势</span>
