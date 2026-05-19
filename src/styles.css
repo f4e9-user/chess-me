@@ -967,6 +967,12 @@ h2 {
   font-weight: 800;
 }
 
+.evaluation-side-switch button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
 .analysis-player-summaries {
   display: flex;
   flex-wrap: wrap;
