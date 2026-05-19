@@ -117,23 +117,6 @@ button:disabled {
   min-width: 0;
 }
 
-.board-focus-panel,
-.review-report-panel,
-.training-plan-panel,
-.strength-profile-panel,
-.review-history-panel {
-  grid-column: 1 / -1;
-}
-
-.current-analysis-panel .workspace-panel-body,
-.training-plan-panel .workspace-panel-body {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.current-analysis-panel .global-analysis-panel {
-  grid-column: 1 / -1;
-}
-
 .history-import-panel,
 .current-game-input-panel {
   background: rgba(255, 255, 255, 0.92);
@@ -772,7 +755,6 @@ h2 {
 }
 
 .analysis-multipv {
-  grid-column: 1 / -1;
   color: var(--ink-muted);
   font-size: 0.76rem;
   line-height: 1.4;
