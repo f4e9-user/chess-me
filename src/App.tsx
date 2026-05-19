@@ -4969,22 +4969,6 @@ function App() {
             {rightPanelTab === 'current-analysis' && (
               <WorkspacePanel groupId="current-analysis">
                 <EvaluationSidePanel side={evaluationSide} onSideChange={setEvaluationSide} />
-                <StockfishPanel
-                  status={engineStatus}
-                  analysis={analysis}
-                  isEnabled={isAnalysisEnabled}
-                  mode={engineMode}
-                  logs={engineLog}
-                  nextMove={nextOriginalMove}
-                  isVariationMode={Boolean(activeVariation)}
-                  fen={activeFen}
-                  isBoardFlipped={isBoardFlipped}
-                  perspective={evaluationPerspective}
-                  onPerspectiveChange={setEvaluationPerspective}
-                  onAnalyze={analyzeCurrentPosition}
-                  onStop={stopAnalysis}
-                />
-                <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
                 <GlobalAnalysisPanel
                   analyses={globalAnalysis}
                   isAnalyzing={isGlobalAnalyzing}
@@ -5004,6 +4988,22 @@ function App() {
                   onCancel={cancelGlobalAnalysis}
                   onSelectMove={(index) => updatePositionIndex(index + 1)}
                 />
+                <StockfishPanel
+                  status={engineStatus}
+                  analysis={analysis}
+                  isEnabled={isAnalysisEnabled}
+                  mode={engineMode}
+                  logs={engineLog}
+                  nextMove={nextOriginalMove}
+                  isVariationMode={Boolean(activeVariation)}
+                  fen={activeFen}
+                  isBoardFlipped={isBoardFlipped}
+                  perspective={evaluationPerspective}
+                  onPerspectiveChange={setEvaluationPerspective}
+                  onAnalyze={analyzeCurrentPosition}
+                  onStop={stopAnalysis}
+                />
+                <OpeningPanel opening={openingMatch} playedPly={playedMoves.length} improvementPlan={openingImprovementPlan} />
               </WorkspacePanel>
             )}
 
