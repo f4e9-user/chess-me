@@ -2012,6 +2012,91 @@ textarea:focus {
   color: #a94442;
 }
 
+.board-move-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 4px 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 0.82rem;
+  scrollbar-width: thin;
+}
+
+.board-move-bar::-webkit-scrollbar {
+  height: 4px;
+}
+
+.board-move-bar::-webkit-scrollbar-thumb {
+  background: rgba(34, 111, 84, 0.25);
+  border-radius: 2px;
+}
+
+.board-move-bar > button {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  border-radius: 6px;
+}
+
+.board-move-pair {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.move-pair-number {
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  user-select: none;
+}
+
+.board-move-pair button {
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  border-radius: 6px;
+  min-width: 36px;
+  text-align: center;
+}
+
+.board-move-pair button.active,
+.board-move-bar > button.active {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
+.board-move-variation {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+  border-left: 2px solid var(--accent-strong);
+  margin-left: 4px;
+  padding-left: 4px;
+}
+
+.board-move-variation button {
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  border-radius: 6px;
+  border-color: rgba(34, 111, 84, 0.42);
+  background: #eef7f1;
+}
+
+.board-move-variation button.variation-active {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
 .move-list button.active .move-quality-badge {
   background: rgba(255, 255, 255, 0.22);
   color: #ffffff;

@@ -4974,6 +4974,20 @@ function App() {
 
           <CapturedPiecesDisplay capturedPieces={capturedPieces} />
 
+          {mode === 'pgn' && !result.error && (
+            <BoardMoveBar
+              moves={result.moves}
+              activeIndex={safeIndex}
+              variationPositions={variationPositions}
+              activeVariationIndex={variationIndex}
+              onSelect={updatePositionIndex}
+              onVariationSelect={(index) => {
+                setVariationIndex(index);
+                setSelectedSquare(null);
+              }}
+            />
+          )}
+
           <div className="replay-controls" aria-label="复盘控制">
             <button type="button" onClick={() => updatePositionIndex(0)} disabled={safeIndex === 0}>
               |&lt;
@@ -5121,27 +5135,7 @@ function App() {
                     />
                   </label>
 
-                  {result.error ? (
-                    <div className="error-box">{result.error}</div>
-                  ) : (
-                    <MoveList
-                      source={result.source}
-                      moves={result.moves}
-                      positions={result.positions}
-                      activeIndex={safeIndex}
-                      variationPositions={variationPositions}
-                      activeVariationIndex={variationIndex}
-                      notesByPosition={notesByPosition}
-                      noteContext={{ mode, text }}
-                      hiddenMoveIndex={shouldHideNextMove ? safeIndex : null}
-                      onSelect={updatePositionIndex}
-                      onVariationSelect={(index) => {
-                        setVariationIndex(index);
-                        setSelectedSquare(null);
-                      }}
-                      analyses={globalAnalysis}
-                    />
-                  )}
+                  {result.error && <div className="error-box">{result.error}</div>}
                 </WorkspacePanel>
 
                 <WorkspacePanel groupId="review-history">
@@ -6810,6 +6804,94 @@ function TrainingNotes({
         />
       </label>
     </section>
+  );
+}
+
+function BoardMoveBar({
+  moves,
+  activeIndex,
+  variationPositions,
+  activeVariationIndex,
+  onSelect,
+  onVariationSelect,
+}: {
+  moves: Move[];
+  activeIndex: number;
+  variationPositions: VariationPosition[];
+  activeVariationIndex: number;
+  onSelect: (index: number) => void;
+  onVariationSelect: (index: number) => void;
+}) {
+  if (moves.length === 0) {
+    return null;
+  }
+
+  const pairs: { number: number; white?: { san: string; index: number }; black?: { san: string; index: number } }[] = [];
+  for (let i = 0; i < moves.length; i += 1) {
+    const move = moves[i];
+    const positionIndex = i + 1;
+    const pairNumber = Math.floor(i / 2) + 1;
+    const pair = pairs[pairNumber - 1] ?? { number: pairNumber };
+    if (move.color === 'w') {
+      pair.white = { san: move.san, index: positionIndex };
+    } else {
+      pair.black = { san: move.san, index: positionIndex };
+    }
+    pairs[pairNumber - 1] = pair;
+  }
+
+  return (
+    <div className="board-move-bar" aria-label="走法序列">
+      <button
+        type="button"
+        className={activeIndex === 0 && activeVariationIndex < 0 ? 'active' : ''}
+        onClick={() => onSelect(0)}
+      >
+        开局
+      </button>
+      {pairs.map((pair) => {
+        const white = pair.white;
+        const black = pair.black;
+        return (
+          <div key={pair.number} className="board-move-pair">
+            <span className="move-pair-number">{pair.number}.</span>
+            {white && (
+              <button
+                type="button"
+                className={activeIndex === white.index && activeVariationIndex < 0 ? 'active' : ''}
+                onClick={() => onSelect(white.index)}
+              >
+                {white.san}
+              </button>
+            )}
+            {black && (
+              <button
+                type="button"
+                className={activeIndex === black.index && activeVariationIndex < 0 ? 'active' : ''}
+                onClick={() => onSelect(black.index)}
+              >
+                {black.san}
+              </button>
+            )}
+          </div>
+        );
+      })}
+      {variationPositions.length > 0 && (
+        <div className="board-move-variation">
+          <span className="move-pair-number">试</span>
+          {variationPositions.map((vp, index) => (
+            <button
+              type="button"
+              key={`${vp.fen}-${index}`}
+              className={activeVariationIndex === index ? 'active variation-active' : 'variation-entry'}
+              onClick={() => onVariationSelect(index)}
+            >
+              {vp.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
