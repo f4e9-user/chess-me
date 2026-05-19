@@ -120,12 +120,21 @@ describe('layout shell helpers', () => {
         modules: ['evaluationSide', 'stockfish', 'opening', 'globalAnalysis'],
       },
       {
+        id: 'coach',
+        className: 'workspace-panel coach-panel',
+        title: '自然语言教练',
+        ariaLabel: '自然语言教练',
+        region: 'resultsArea',
+        order: 5,
+        modules: ['naturalLanguageCoach'],
+      },
+      {
         id: 'review-report',
         className: 'workspace-panel review-report-panel',
         title: '复盘报告',
         ariaLabel: '复盘报告',
         region: 'resultsArea',
-        order: 5,
+        order: 6,
         modules: ['reviewReport'],
       },
       {
@@ -134,7 +143,7 @@ describe('layout shell helpers', () => {
         title: '训练建议',
         ariaLabel: '训练建议',
         region: 'resultsArea',
-        order: 6,
+        order: 7,
         modules: ['guessTraining', 'mistakeBook', 'middlegamePlan', 'endgameTraining'],
       },
       {
@@ -143,7 +152,7 @@ describe('layout shell helpers', () => {
         title: '棋力画像',
         ariaLabel: '棋力画像',
         region: 'resultsArea',
-        order: 7,
+        order: 8,
         modules: ['strengthProfile'],
       },
       {
@@ -152,7 +161,7 @@ describe('layout shell helpers', () => {
         title: '历史复盘',
         ariaLabel: '历史复盘',
         region: 'resultsArea',
-        order: 8,
+        order: 9,
         modules: ['reviewReportHistory'],
       },
     ]);

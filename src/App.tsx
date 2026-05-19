@@ -42,10 +42,11 @@ const layoutPanelGroups = [
   { id: 'history-import', className: 'workspace-panel history-import-panel', title: '历史与导入入口', ariaLabel: '历史与导入入口', region: 'panelColumn', order: 2, modules: ['importExport', 'bulkPgnLibrary'] },
   { id: 'current-game-input', className: 'workspace-panel current-game-input-panel', title: '当前对局输入', ariaLabel: '当前对局输入', region: 'panelColumn', order: 3, modules: ['pgnFenSwitch', 'gameText', 'moveList'] },
   { id: 'current-analysis', className: 'workspace-panel current-analysis-panel', title: '当前分析结果', ariaLabel: '当前分析结果', region: 'resultsArea', order: 4, modules: ['evaluationSide', 'stockfish', 'opening', 'globalAnalysis'] },
-  { id: 'review-report', className: 'workspace-panel review-report-panel', title: '复盘报告', ariaLabel: '复盘报告', region: 'resultsArea', order: 5, modules: ['reviewReport'] },
-  { id: 'training-plan', className: 'workspace-panel training-plan-panel', title: '训练建议', ariaLabel: '训练建议', region: 'resultsArea', order: 6, modules: ['guessTraining', 'mistakeBook', 'middlegamePlan', 'endgameTraining'] },
-  { id: 'strength-profile', className: 'workspace-panel strength-profile-panel', title: '棋力画像', ariaLabel: '棋力画像', region: 'resultsArea', order: 7, modules: ['strengthProfile'] },
-  { id: 'review-history', className: 'workspace-panel review-history-panel', title: '历史复盘', ariaLabel: '历史复盘', region: 'resultsArea', order: 8, modules: ['reviewReportHistory'] },
+  { id: 'coach', className: 'workspace-panel coach-panel', title: '自然语言教练', ariaLabel: '自然语言教练', region: 'resultsArea', order: 5, modules: ['naturalLanguageCoach'] },
+  { id: 'review-report', className: 'workspace-panel review-report-panel', title: '复盘报告', ariaLabel: '复盘报告', region: 'resultsArea', order: 6, modules: ['reviewReport'] },
+  { id: 'training-plan', className: 'workspace-panel training-plan-panel', title: '训练建议', ariaLabel: '训练建议', region: 'resultsArea', order: 7, modules: ['guessTraining', 'mistakeBook', 'middlegamePlan', 'endgameTraining'] },
+  { id: 'strength-profile', className: 'workspace-panel strength-profile-panel', title: '棋力画像', ariaLabel: '棋力画像', region: 'resultsArea', order: 8, modules: ['strengthProfile'] },
+  { id: 'review-history', className: 'workspace-panel review-history-panel', title: '历史复盘', ariaLabel: '历史复盘', region: 'resultsArea', order: 9, modules: ['reviewReportHistory'] },
 ] as const satisfies readonly LayoutPanelGroup[];
 
 function getLayoutPanelGroups() {
@@ -3623,11 +3624,12 @@ function buildVariationPgn(baseFen: string, lanMoves: string[]) {
   return tokens.join(' ');
 }
 
-type RightPanelTab = 'library' | 'current-analysis' | 'review-report' | 'training-plan' | 'strength-profile';
+type RightPanelTab = 'library' | 'current-analysis' | 'coach' | 'review-report' | 'training-plan' | 'strength-profile';
 
 const rightPanelTabs: { id: RightPanelTab; label: string }[] = [
   { id: 'library', label: '棋谱' },
   { id: 'current-analysis', label: '分析' },
+  { id: 'coach', label: '教练' },
   { id: 'review-report', label: '报告' },
   { id: 'training-plan', label: '训练' },
   { id: 'strength-profile', label: '画像' },
@@ -5013,17 +5015,24 @@ function App() {
               </WorkspacePanel>
             )}
 
+            {rightPanelTab === 'coach' && (
+              <WorkspacePanel groupId="coach">
+                <NaturalLanguageCoachPanel
+                  report={naturalLanguageCoach}
+                  onCopy={copyNaturalLanguageCoachReport}
+                  onExport={exportNaturalLanguageCoachReport}
+                />
+              </WorkspacePanel>
+            )}
+
             {rightPanelTab === 'review-report' && (
               <WorkspacePanel groupId="review-report">
                 <ReviewReportPanel
                   report={reviewReport}
-                  naturalLanguageCoach={naturalLanguageCoach}
                   evaluationSide={reviewReportEvaluationSide}
                   onEvaluationSideChange={setReviewReportEvaluationSide}
                   onCopy={copyReviewReport}
-                  onCopyCoach={copyNaturalLanguageCoachReport}
                   onExport={exportReviewReport}
-                  onExportCoach={exportNaturalLanguageCoachReport}
                   onSave={saveReviewReportToHistory}
                 />
               </WorkspacePanel>
@@ -6247,23 +6256,17 @@ function StrengthProfilePanel({
 
 function ReviewReportPanel({
   report,
-  naturalLanguageCoach,
   evaluationSide,
   onEvaluationSideChange,
   onCopy,
-  onCopyCoach,
   onExport,
-  onExportCoach,
   onSave,
 }: {
   report: ReviewReport;
-  naturalLanguageCoach: NaturalLanguageCoachReport;
   evaluationSide: EvaluationSide;
   onEvaluationSideChange: (side: EvaluationSide) => void;
   onCopy: () => void;
-  onCopyCoach: () => void;
   onExport: () => void;
-  onExportCoach: () => void;
   onSave: () => void;
 }) {
   return (
@@ -6310,49 +6313,61 @@ function ReviewReportPanel({
         <strong>下一次训练建议</strong>
         <p>{report.trainingAdvice}</p>
       </div>
+    </section>
+  );
+}
 
-      <div className="natural-language-coach-panel">
-        <div className="natural-language-coach-header">
-          <div>
-            <strong>自然语言教练</strong>
-            <p>{naturalLanguageCoach.summary}</p>
-            <small>当前筛选：{naturalLanguageCoach.filterLabel}</small>
-          </div>
-          <div className="natural-language-coach-actions">
-            <button type="button" onClick={onCopyCoach}>
-              复制教练报告
-            </button>
-            <button type="button" onClick={onExportCoach}>
-              导出教练报告
-            </button>
-          </div>
+function NaturalLanguageCoachPanel({
+  report,
+  onCopy,
+  onExport,
+}: {
+  report: NaturalLanguageCoachReport;
+  onCopy: () => void;
+  onExport: () => void;
+}) {
+  return (
+    <section className="natural-language-coach-panel" aria-label="自然语言教练">
+      <div className="natural-language-coach-header">
+        <div>
+          <span>自然语言教练</span>
+          <p>{report.summary}</p>
+          <small>当前筛选：{report.filterLabel}</small>
         </div>
+        <div className="natural-language-coach-actions">
+          <button type="button" onClick={onCopy}>
+            复制教练报告
+          </button>
+          <button type="button" onClick={onExport}>
+            导出教练报告
+          </button>
+        </div>
+      </div>
 
-        <div className="natural-language-coach-grid">
-          <article>
-            <span>推荐练习主题</span>
-            {naturalLanguageCoach.practiceThemes.slice(0, 4).map((theme) => (
-              <p key={`${theme.theme}-${theme.source}`}>
-                <strong>{theme.theme}</strong> · {theme.priority} · {theme.evidence}。{theme.nextAction}
-              </p>
-            ))}
-          </article>
-          <article>
-            <span>关键局面解释</span>
-            {naturalLanguageCoach.positionExplanations.length ? (
-              naturalLanguageCoach.positionExplanations.slice(0, 3).map((explanation) => (
-                <div className="natural-language-position" key={explanation.moveLabel}>
-                  <strong>{explanation.title}</strong>
-                  <p>{explanation.whyBad}</p>
-                  <p>{explanation.candidateGuidance}</p>
-                  <small>主题：{explanation.practiceThemes.join('、') || '候选着法与风险控制'}</small>
-                </div>
-              ))
-            ) : (
-              <p>运行“一键全局分析”后，会根据关键失误生成可复制的中文教练解释。</p>
-            )}
-          </article>
-        </div>
+      <div className="natural-language-coach-grid">
+        <article>
+          <span>推荐练习主题</span>
+          {report.practiceThemes.slice(0, 4).map((theme) => (
+            <p key={`${theme.theme}-${theme.source}`}>
+              <strong>{theme.theme}</strong> · {theme.priority} · {theme.evidence}。{theme.nextAction}
+            </p>
+          ))}
+        </article>
+        <article>
+          <span>关键局面解释</span>
+          {report.positionExplanations.length ? (
+            report.positionExplanations.slice(0, 3).map((explanation) => (
+              <div className="natural-language-position" key={explanation.moveLabel}>
+                <strong>{explanation.title}</strong>
+                <p>{explanation.whyBad}</p>
+                <p>{explanation.candidateGuidance}</p>
+                <small>主题：{explanation.practiceThemes.join('、') || '候选着法与风险控制'}</small>
+              </div>
+            ))
+          ) : (
+            <p>运行“一键全局分析”后，会根据关键失误生成可复制的中文教练解释。</p>
+          )}
+        </article>
       </div>
     </section>
   );
