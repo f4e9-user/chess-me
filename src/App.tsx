@@ -1702,6 +1702,22 @@ function formatScore(
   return `${perspectiveLabel} ${pawns >= 0 ? '+' : ''}${pawns.toFixed(2)}`;
 }
 
+function formatEngineScore(score: StockfishAnalysis['score']): string {
+  if (!score) {
+    return '等待评分';
+  }
+
+  if (score.type === 'mate') {
+    return `${score.value > 0 ? '白方' : '黑方'}M${Math.abs(score.value)}`;
+  }
+
+  const pawns = score.value / 100;
+  if (pawns > 0) {
+    return `+${pawns.toFixed(2)}`;
+  }
+  return pawns.toFixed(2);
+}
+
 function identifyOpening(playedMoves: string[]): OpeningMatch {
   if (playedMoves.length === 0) {
     return {
@@ -3374,23 +3390,17 @@ function getTrainingExplanation({
   analysis,
   nextMove,
   isVariationMode,
-  perspective,
-  fen,
-  isBoardFlipped,
 }: {
   analysis: StockfishAnalysis | null;
   nextMove?: Move;
   isVariationMode: boolean;
-  perspective: EvaluationPerspective;
-  fen: string;
-  isBoardFlipped: boolean;
 }) {
   if (!analysis || (!analysis.bestMoveSan && analysis.depth === 0)) {
     return '开启 Stockfish 后，这里会解释当前局面的首选计划。';
   }
 
   const scoreText = analysis.score
-    ? `当前评估：${formatScore(analysis.score, perspective, fen, isBoardFlipped)}。`
+    ? `当前评估：${formatEngineScore(analysis.score)}。`
     : '';
   const bestMoveText = analysis.bestMoveSan
     ? `引擎首选是 ${analysis.bestMoveSan}。`
@@ -4996,10 +5006,6 @@ function App() {
                   logs={engineLog}
                   nextMove={nextOriginalMove}
                   isVariationMode={Boolean(activeVariation)}
-                  fen={activeFen}
-                  isBoardFlipped={isBoardFlipped}
-                  perspective={evaluationPerspective}
-                  onPerspectiveChange={setEvaluationPerspective}
                   onAnalyze={analyzeCurrentPosition}
                   onStop={stopAnalysis}
                 />
@@ -5454,6 +5460,70 @@ function EvaluationSidePanel({
   );
 }
 
+function EvaluationBar({ score }: { score: StockfishAnalysis['score'] | null }) {
+  if (!score) {
+    return (
+      <div className="eval-bar">
+        <div className="eval-bar-track">
+          <div className="eval-bar-center" />
+        </div>
+        <div className="eval-bar-labels">
+          <span>黑方优势</span>
+          <span>—</span>
+          <span>白方优势</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (score.type === 'mate') {
+    const isWhiteMate = score.value > 0;
+    return (
+      <div className="eval-bar">
+        <div className="eval-bar-track">
+          <div className="eval-bar-center" />
+          <div
+            className={`eval-bar-mate ${isWhiteMate ? 'white' : 'black'}`}
+          >
+            {isWhiteMate ? '白方胜势' : '黑方胜势'} M{Math.abs(score.value)}
+          </div>
+        </div>
+        <div className="eval-bar-labels">
+          <span>黑方优势</span>
+          <span>{formatEngineScore(score)}</span>
+          <span>白方优势</span>
+        </div>
+      </div>
+    );
+  }
+
+  const maxCp = 500;
+  const clamped = Math.max(-maxCp, Math.min(maxCp, score.value));
+  const absPercent = (Math.abs(clamped) / maxCp) * 50;
+  const leftPercent = clamped >= 0 ? 50 : 50 - absPercent;
+
+  return (
+    <div className="eval-bar">
+      <div className="eval-bar-track">
+        <div className="eval-bar-center" />
+        <div
+          className="eval-bar-fill"
+          style={{
+            left: `${leftPercent}%`,
+            width: `${absPercent}%`,
+            background: clamped >= 0 ? '#ffffff' : '#1d2520',
+          }}
+        />
+      </div>
+      <div className="eval-bar-labels">
+        <span>黑方优势</span>
+        <span>{formatEngineScore(score)}</span>
+        <span>白方优势</span>
+      </div>
+    </div>
+  );
+}
+
 function StockfishPanel({
   status,
   analysis,
@@ -5462,10 +5532,6 @@ function StockfishPanel({
   logs,
   nextMove,
   isVariationMode,
-  fen,
-  isBoardFlipped,
-  perspective,
-  onPerspectiveChange,
   onAnalyze,
   onStop,
 }: {
@@ -5476,10 +5542,6 @@ function StockfishPanel({
   logs: string[];
   nextMove?: Move;
   isVariationMode: boolean;
-  fen: string;
-  isBoardFlipped: boolean;
-  perspective: EvaluationPerspective;
-  onPerspectiveChange: (perspective: EvaluationPerspective) => void;
   onAnalyze: () => void;
   onStop: () => void;
 }) {
@@ -5495,9 +5557,6 @@ function StockfishPanel({
     analysis,
     nextMove,
     isVariationMode,
-    perspective,
-    fen,
-    isBoardFlipped,
   });
 
   return (
@@ -5520,34 +5579,12 @@ function StockfishPanel({
         </div>
       </div>
 
-      <div className="engine-perspective" aria-label="评分视角">
-        <button
-          type="button"
-          className={perspective === 'white' ? 'active' : ''}
-          onClick={() => onPerspectiveChange('white')}
-        >
-          白方
-        </button>
-        <button
-          type="button"
-          className={perspective === 'sideToMove' ? 'active' : ''}
-          onClick={() => onPerspectiveChange('sideToMove')}
-        >
-          执棋方
-        </button>
-        <button
-          type="button"
-          className={perspective === 'board' ? 'active' : ''}
-          onClick={() => onPerspectiveChange('board')}
-        >
-          棋盘
-        </button>
-      </div>
+      <EvaluationBar score={analysis?.score ?? null} />
 
       <div className="engine-grid">
         <div>
           <span>评分</span>
-          <strong>{formatScore(analysis?.score ?? null, perspective, fen, isBoardFlipped)}</strong>
+          <strong>{formatEngineScore(analysis?.score ?? null)}</strong>
         </div>
         <div>
           <span>深度</span>
