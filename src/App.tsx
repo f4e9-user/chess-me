@@ -689,6 +689,30 @@ const guessStatsStorageKey = 'chess-me:guess-stats:v1';
 const mistakeBookStorageKey = 'chess-me:mistake-book:v1';
 const candidateTrainingStatsStorageKey = 'chess-me:candidate-training-stats:v1';
 const candidateTrainingSessionsStorageKey = 'chess-me:candidate-training-sessions:v1';
+const sessionSnapshotStorageKey = 'chess-me:session-snapshot:v1';
+
+type SessionSnapshot = {
+  mode: ReplayMode;
+  text: string;
+  positionIndex: number;
+  globalAnalysis: GlobalMoveAnalysis[];
+  evaluationSide: EvaluationSide;
+  evaluationPerspective: EvaluationPerspective;
+  reviewReportEvaluationSide: EvaluationSide;
+  middlegamePlanEvaluationSide: EvaluationSide;
+  endgameTrainingEvaluationSide: EvaluationSide;
+  isBoardFlipped: boolean;
+  analysisDepthPreset: AnalysisDepthPreset;
+  globalAnalysisFilter: GlobalAnalysisMomentFilter;
+  savedVariations: SavedVariation[];
+  variationPositions: VariationPosition[];
+  variationIndex: number;
+  notesByPosition: Record<string, string>;
+  rightPanelTab: RightPanelTab;
+  bulkPgnLibrary: BulkPgnLibrary | null;
+  bulkPgnFilters: BulkPgnLibraryFilters;
+  savedAt: string;
+};
 
 const openingBook: OpeningEntry[] = [
   { eco: 'A00', name: '初始局面', moves: [] },
@@ -3465,6 +3489,70 @@ function saveStoredNotes(notes: Record<string, string>) {
   window.localStorage.setItem(notesStorageKey, JSON.stringify(notes));
 }
 
+function hasSessionSnapshot(): boolean {
+  try {
+    const raw = window.localStorage.getItem(sessionSnapshotStorageKey);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && parsed.text && parsed.savedAt;
+  } catch {
+    return false;
+  }
+}
+
+function loadSessionSnapshot(): SessionSnapshot | null {
+  try {
+    const raw = window.localStorage.getItem(sessionSnapshotStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SessionSnapshot>;
+    if (!parsed || typeof parsed !== 'object' || !parsed.text || !parsed.mode) {
+      return null;
+    }
+    return {
+      mode: parsed.mode === 'fen' ? 'fen' : 'pgn',
+      text: String(parsed.text),
+      positionIndex: Number(parsed.positionIndex) || 0,
+      globalAnalysis: Array.isArray(parsed.globalAnalysis) ? parsed.globalAnalysis : [],
+      evaluationSide: (parsed.evaluationSide as EvaluationSide) || 'white',
+      evaluationPerspective: (parsed.evaluationPerspective as EvaluationPerspective) || 'white',
+      reviewReportEvaluationSide: (parsed.reviewReportEvaluationSide as EvaluationSide) || 'white',
+      middlegamePlanEvaluationSide: (parsed.middlegamePlanEvaluationSide as EvaluationSide) || 'white',
+      endgameTrainingEvaluationSide: (parsed.endgameTrainingEvaluationSide as EvaluationSide) || 'white',
+      isBoardFlipped: Boolean(parsed.isBoardFlipped),
+      analysisDepthPreset: (parsed.analysisDepthPreset as AnalysisDepthPreset) || 'standard',
+      globalAnalysisFilter: (parsed.globalAnalysisFilter as GlobalAnalysisMomentFilter) || 'all',
+      savedVariations: Array.isArray(parsed.savedVariations) ? parsed.savedVariations : [],
+      variationPositions: Array.isArray(parsed.variationPositions) ? parsed.variationPositions : [],
+      variationIndex: Number(parsed.variationIndex) || -1,
+      notesByPosition: parsed.notesByPosition && typeof parsed.notesByPosition === 'object' ? parsed.notesByPosition : {},
+      rightPanelTab: (parsed.rightPanelTab as RightPanelTab) || 'library',
+      bulkPgnLibrary: parsed.bulkPgnLibrary ?? null,
+      bulkPgnFilters: parsed.bulkPgnFilters ?? {
+        source: 'all',
+        result: 'all',
+        color: 'all',
+        sortBy: 'date',
+        sortDirection: 'desc',
+      },
+      savedAt: String(parsed.savedAt || new Date().toISOString()),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveSessionSnapshot(snapshot: SessionSnapshot) {
+  try {
+    window.localStorage.setItem(sessionSnapshotStorageKey, JSON.stringify(snapshot));
+  } catch {}
+}
+
+function clearSessionSnapshot() {
+  try {
+    window.localStorage.removeItem(sessionSnapshotStorageKey);
+  } catch {}
+}
+
 async function copyText(textToCopy: string) {
   if (navigator.clipboard) {
     await navigator.clipboard.writeText(textToCopy);
@@ -3818,6 +3906,34 @@ function App() {
   );
   const nextOriginalMove = activeVariation ? undefined : result.moves[safeIndex];
   const shouldHideNextMove = isGuessMode && !guessResult && Boolean(nextOriginalMove) && !activeVariation;
+
+  useEffect(() => {
+    const snapshot = loadSessionSnapshot();
+    if (snapshot) {
+      setMode(snapshot.mode);
+      setText(snapshot.text);
+      setPositionIndex(snapshot.positionIndex);
+      setGlobalAnalysis(snapshot.globalAnalysis);
+      setEvaluationSide(snapshot.evaluationSide);
+      setEvaluationPerspective(snapshot.evaluationPerspective);
+      setReviewReportEvaluationSide(snapshot.reviewReportEvaluationSide);
+      setMiddlegamePlanEvaluationSide(snapshot.middlegamePlanEvaluationSide);
+      setEndgameTrainingEvaluationSide(snapshot.endgameTrainingEvaluationSide);
+      setIsBoardFlipped(snapshot.isBoardFlipped);
+      setAnalysisDepthPreset(snapshot.analysisDepthPreset);
+      setGlobalAnalysisFilter(snapshot.globalAnalysisFilter);
+      setSavedVariations(snapshot.savedVariations);
+      setVariationPositions(snapshot.variationPositions);
+      setVariationIndex(snapshot.variationIndex);
+      setNotesByPosition(snapshot.notesByPosition);
+      setRightPanelTab(snapshot.rightPanelTab);
+      setBulkPgnLibrary(snapshot.bulkPgnLibrary);
+      setBulkPgnFilters(snapshot.bulkPgnFilters);
+      setGlobalAnalysisCacheStatus(
+        snapshot.globalAnalysis.length > 0 ? '已缓存（来自存档）' : '尚未分析',
+      );
+    }
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4506,6 +4622,69 @@ function App() {
     setBulkPgnFilters((filters) => ({ ...filters, [key]: value }));
   };
 
+  const saveCurrentSession = () => {
+    const snapshot: SessionSnapshot = {
+      mode,
+      text,
+      positionIndex: safeIndex,
+      globalAnalysis,
+      evaluationSide,
+      evaluationPerspective,
+      reviewReportEvaluationSide,
+      middlegamePlanEvaluationSide,
+      endgameTrainingEvaluationSide,
+      isBoardFlipped,
+      analysisDepthPreset,
+      globalAnalysisFilter,
+      savedVariations,
+      variationPositions,
+      variationIndex,
+      notesByPosition,
+      rightPanelTab,
+      bulkPgnLibrary,
+      bulkPgnFilters,
+      savedAt: new Date().toISOString(),
+    };
+    saveSessionSnapshot(snapshot);
+    showToast({ type: 'success', text: '当前进度已保存到浏览器。' });
+  };
+
+  const loadCurrentSession = () => {
+    const snapshot = loadSessionSnapshot();
+    if (!snapshot) {
+      showToast({ type: 'error', text: '没有可读取的存档。' });
+      return;
+    }
+    setMode(snapshot.mode);
+    setText(snapshot.text);
+    setPositionIndex(snapshot.positionIndex);
+    setGlobalAnalysis(snapshot.globalAnalysis);
+    setEvaluationSide(snapshot.evaluationSide);
+    setEvaluationPerspective(snapshot.evaluationPerspective);
+    setReviewReportEvaluationSide(snapshot.reviewReportEvaluationSide);
+    setMiddlegamePlanEvaluationSide(snapshot.middlegamePlanEvaluationSide);
+    setEndgameTrainingEvaluationSide(snapshot.endgameTrainingEvaluationSide);
+    setIsBoardFlipped(snapshot.isBoardFlipped);
+    setAnalysisDepthPreset(snapshot.analysisDepthPreset);
+    setGlobalAnalysisFilter(snapshot.globalAnalysisFilter);
+    setSavedVariations(snapshot.savedVariations);
+    setVariationPositions(snapshot.variationPositions);
+    setVariationIndex(snapshot.variationIndex);
+    setNotesByPosition(snapshot.notesByPosition);
+    setRightPanelTab(snapshot.rightPanelTab);
+    setBulkPgnLibrary(snapshot.bulkPgnLibrary);
+    setBulkPgnFilters(snapshot.bulkPgnFilters);
+    setGlobalAnalysisCacheStatus(
+      snapshot.globalAnalysis.length > 0 ? '已缓存（来自存档）' : '尚未分析',
+    );
+    showToast({ type: 'success', text: `已恢复 ${new Date(snapshot.savedAt).toLocaleString()} 保存的进度。` });
+  };
+
+  const clearCurrentSession = () => {
+    clearSessionSnapshot();
+    showToast({ type: 'success', text: '已清除本地存档。' });
+  };
+
   const toggleBulkPgnImportant = (game: BulkPgnGameSummary) => {
     setBulkPgnLibrary((library) => (library ? { ...library, games: toggleBulkPgnGameImportant(library.games, game.id) } : library));
     if (game.historyReportId) {
@@ -4888,9 +5067,13 @@ function App() {
                 <WorkspacePanel groupId="history-import">
                   <ImportExportTools
                     canExportPgn={mode === 'pgn' && !result.error}
+                    hasSession={hasSessionSnapshot()}
                     onImportPgn={importPgnFile}
                     onExportPgn={exportCurrentPgn}
                     onCopyFen={copyCurrentFen}
+                    onSaveSession={saveCurrentSession}
+                    onLoadSession={loadCurrentSession}
+                    onClearSession={clearCurrentSession}
                   />
 
                   {bulkPgnLibrary && (
@@ -5126,14 +5309,22 @@ function getLegalTargets(fen: string, square: Square) {
 
 function ImportExportTools({
   canExportPgn,
+  hasSession,
   onImportPgn,
   onExportPgn,
   onCopyFen,
+  onSaveSession,
+  onLoadSession,
+  onClearSession,
 }: {
   canExportPgn: boolean;
+  hasSession: boolean;
   onImportPgn: (files: FileList | File[] | null) => void;
   onExportPgn: () => void;
   onCopyFen: () => void;
+  onSaveSession: () => void;
+  onLoadSession: () => void;
+  onClearSession: () => void;
 }) {
   return (
     <div className="file-tools" aria-label="导入导出">
@@ -5155,6 +5346,19 @@ function ImportExportTools({
       <button type="button" onClick={onCopyFen}>
         复制 FEN
       </button>
+      <button type="button" onClick={onSaveSession}>
+        保存进度
+      </button>
+      {hasSession && (
+        <>
+          <button type="button" onClick={onLoadSession}>
+            读取进度
+          </button>
+          <button type="button" onClick={onClearSession}>
+            清除存档
+          </button>
+        </>
+      )}
     </div>
   );
 }
